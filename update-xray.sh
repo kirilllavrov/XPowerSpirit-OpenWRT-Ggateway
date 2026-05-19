@@ -44,35 +44,6 @@ fetch_url() {
     return 1
 }
 
-# Загрузка с кастомным заголовком (для подписки)
-fetch_url_with_header() {
-    local url="$1"
-    local dst="$2"
-    local header="$3"
-    local max_retries=2
-    local retry=1
-
-    while [ $retry -le $max_retries ]; do
-        curl -s -L --user-agent "OpenWrt-Xray/1.0" -H "$header" --max-time 20 -o "$dst" "$url"
-        local rc=$?
-
-        if [ $rc -eq 0 ] && [ -s "$dst" ]; then
-            if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
-                rm -f "$dst"
-            else
-                return 0
-            fi
-        fi
-
-        if [ $retry -lt $max_retries ]; then
-            sleep 2
-        fi
-        retry=$((retry + 1))
-    done
-
-    return 1
-}
-
 CONFIG_DIR="/etc/xray"
 SUB_FILE="$CONFIG_DIR/subscription.url"
 CONFIG_JSON="$CONFIG_DIR/config.json"
@@ -266,48 +237,37 @@ update_geo "$GEOIP_URL" "$GEOIP"
 update_geo "$GEOSITE_URL" "$GEOSITE"
 
 # ============================
-#   Генерация config.json
+#   Генерация config.json (упрощённая версия)
 # ============================
 
 echo "→ Генерация config.json..." >>"$LOG"
 
-MAX_RETRIES=2
-TRY=1
-UPDATED=0
-
-while [ $TRY -le $MAX_RETRIES ]; do
-    TMP_CONFIG="$TMP_DIR/config.json.tmp"
-    rm -f "$TMP_CONFIG" "/tmp/xray-sub-raw.txt"
-    
-    if fetch_url_with_header "$SUB_URL" "/tmp/xray-sub-raw.txt" "x-hwid: $HWID"; then
-        if python3 "$PARSER" <"/tmp/xray-sub-raw.txt" >"$TMP_DIR/parsed.json" 2>/dev/null; then
-            if python3 "$GENERATOR" --output "$TMP_CONFIG" <"$TMP_DIR/parsed.json" 2>/dev/null; then
-                rm -f "/tmp/xray-sub-raw.txt" "$TMP_DIR/parsed.json"
-                
-                if [ ! -s "$TMP_CONFIG" ]; then
-                    echo "[!] Новый config.json пустой (попытка $TRY)" >>"$LOG"
-                elif xray run -test -config "$TMP_CONFIG" >/dev/null 2>&1; then
-                    mv "$TMP_CONFIG" "$CONFIG_JSON"
-                    echo "[+] Новый config.json установлен (попытка $TRY)" >>"$LOG"
-                    UPDATED=1
-                    break
-                else
-                    echo "[X] Новый config.json невалиден (попытка $TRY)" >>"$LOG"
-                    # Логируем ошибку валидации
-                    xray run -test -config "$TMP_CONFIG" 2>>"$LOG"
-                fi
+# Скачиваем подписку
+if ! curl -s -L -H "x-hwid: $HWID" "$SUB_URL" -o "$TMP_DIR/sub_raw.txt"; then
+    echo "[!] Не удалось скачать подписку" >>"$LOG"
+else
+    # Парсим подписку
+    if python3 "$PARSER" < "$TMP_DIR/sub_raw.txt" > "$TMP_DIR/parsed.json" 2>>"$LOG"; then
+        # Генерируем конфиг
+        if python3 "$GENERATOR" --output "$TMP_DIR/config.json.tmp" < "$TMP_DIR/parsed.json" 2>>"$LOG"; then
+            # Проверяем валидность
+            if xray run -test -config "$TMP_DIR/config.json.tmp" >>"$LOG" 2>&1; then
+                mv "$TMP_DIR/config.json.tmp" "$CONFIG_JSON"
+                echo "[+] Новый config.json установлен" >>"$LOG"
+            else
+                echo "[X] Новый config.json невалиден" >>"$LOG"
+                xray run -test -config "$TMP_DIR/config.json.tmp" 2>>"$LOG"
             fi
+        else
+            echo "[X] Ошибка генератора конфига" >>"$LOG"
         fi
+    else
+        echo "[X] Ошибка парсера подписки" >>"$LOG"
     fi
-    
-    rm -f "/tmp/xray-sub-raw.txt" "$TMP_DIR/parsed.json" "$TMP_CONFIG"
-    TRY=$((TRY + 1))
-    [ $TRY -le $MAX_RETRIES ] && sleep 2
-done
-
-if [ $UPDATED -eq 0 ]; then
-    echo "[!] Все попытки обновления неудачны — сохраняем старый конфиг" >>"$LOG"
 fi
+
+# Очистка временных файлов
+rm -f "$TMP_DIR/sub_raw.txt" "$TMP_DIR/parsed.json" "$TMP_DIR/config.json.tmp"
 
 # ============================
 #   Финальная проверка config.json

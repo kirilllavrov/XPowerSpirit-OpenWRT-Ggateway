@@ -318,33 +318,29 @@ CONF="/etc/xray/config.json"
 ASSET_DIR="/usr/share/xray"
 
 start_service() {
-    # Синхронизация времени (не блокирует)
     ntpd -q -p 77.88.8.8 2>/dev/null || \
     ntpd -q -p 1.0.0.1 2>/dev/null || \
     logger -t xray "Time sync failed, continuing anyway"
     sleep 1
-    
-    # 1. Применяем базовые nftables правила сразу (без резолвинга прокси)
+
+    # Применяем базовые nftables правила (без резолвинга прокси)
     if [ -x /usr/share/xray/update-nft.sh ]; then
         /usr/share/xray/update-nft.sh --no-resolve &
     else
         logger -t xray "update-nft.sh not found or not executable"
     fi
 
-    # 2. Запускаем Xray сразу (он сам разберётся с DNS через hosts)
-    #    Не ждём сеть — Xray может работать и без интернета
+    # Проверяем наличие геофайлов
     if [ ! -s "$ASSET_DIR/geoip.dat" ] || [ ! -s "$ASSET_DIR/geosite.dat" ]; then
-        logger -t xray "Geo assets missing — will update in background"
-        /usr/share/xray/update-xray.sh &
+        logger -t xray "Geo assets missing — run update-xray.sh manually"
     fi
 
-    # Проверяем валидность конфига (быстрая проверка)
+    # Проверяем валидность конфига
     if ! xray run -test -config "$CONF" >/dev/null 2>&1; then
-        logger -t xray "Invalid config.json — will update in background"
-        /usr/share/xray/update-xray.sh &
+        logger -t xray "Invalid config.json — run update-xray.sh manually"
     fi
 
-    # Запускаем Xray через procd
+    # Запускаем Xray
     procd_open_instance "xray"
     procd_set_param command /usr/bin/xray run -config "$CONF"
     procd_set_param env XRAY_LOCATION_ASSET="$ASSET_DIR"
@@ -366,26 +362,6 @@ start_service() {
     fi
 
     logger -t xray "Xray started successfully"
-    
-    # 3. В фоне ждём появление интернета и донастраиваем всё
-    (
-        # Ждём доступность интернета (до 5 минут)
-        for i in $(seq 1 60); do
-            # Проверяем через resolveip (он не зависит от системного DNS)
-            if resolveip -4 google.com 77.88.8.8 >/dev/null 2>&1; then
-                logger -t xray "Internet is reachable, updating config and nftables"
-                # Обновляем конфиг (если нужно)
-                /usr/share/xray/update-xray.sh
-                # Пересобираем nftables с полным резолвингом прокси
-                /usr/share/xray/update-nft.sh --resolve
-                break
-            fi
-            if [ $i -eq 60 ]; then
-                logger -t xray "Internet not reachable after 5 minutes, continuing"
-            fi
-            sleep 5
-        done
-    ) &
 }
 
 stop_service() {
@@ -540,7 +516,7 @@ else
 fi
 
 # =============================================
-# 11. Настройка hotplug (автообновление после включения WAN)
+# 11. Настройка hotplug (автообновление после поднятия LAN)
 # =============================================
 echo "11. Настройка hotplug..."
 
@@ -549,22 +525,12 @@ cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "lan" ] || exit 0
 
-if ! pidof xray >/dev/null; then
-    /etc/init.d/xray start
-    sleep 5
-fi
-
-for i in 1 2 3 4 5 6 7; do
-    sleep 5
-    if curl -fs --max-time 3 https://www.google.com/gen_204 >/dev/null; then
-        /usr/share/xray/update-xray.sh &
-        exit 0
-    fi
-done
+# Запускаем обновление в фоне (один раз после поднятия сети)
+/usr/share/xray/update-xray.sh &
 EOF
 
 chmod +x /etc/hotplug.d/iface/99-xray-autoupdate
-echo "[+] Hotplug для автообновления после включения LAN настроен"
+echo "[+] Hotplug для автообновления после поднятия LAN настроен"
 
 # =============================================
 # 12. Запуск и рестарт служб
