@@ -516,7 +516,7 @@ else
 fi
 
 # =============================================
-# 11. Настройка hotplug (автообновление после поднятия LAN)
+# 11. Настройка hotplug (автообновление после поднятия LAN + проверка интернета)
 # =============================================
 echo "11. Настройка hotplug..."
 
@@ -525,8 +525,21 @@ cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "lan" ] || exit 0
 
-# Запускаем обновление в фоне (один раз после поднятия сети)
-/usr/share/xray/update-xray.sh &
+# Ждём появления интернета (до 2 минут)
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    # Проверяем доступность шлюза (Keenetic)
+    if ping -c1 -W2 192.168.1.1 >/dev/null 2>&1; then
+        # Проверяем DNS через resolveip
+        if resolveip -4 google.com 77.88.8.8 >/dev/null 2>&1; then
+            logger -t xray-hotplug "Internet is reachable, running update-xray.sh"
+            /usr/share/xray/update-xray.sh &
+            exit 0
+        fi
+    fi
+    sleep 10
+done
+
+logger -t xray-hotplug "Internet not reachable after 2 minutes, skipping update"
 EOF
 
 chmod +x /etc/hotplug.d/iface/99-xray-autoupdate
