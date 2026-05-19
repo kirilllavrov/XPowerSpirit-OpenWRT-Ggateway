@@ -121,7 +121,7 @@ def base_config():
             },
             {
                 "tag": "dns-in",
-                "listen": "0.0.0.0",
+                "listen": "192.168.1.120",
                 "port": 53,
                 "protocol": "dokodemo-door",
                 "settings": {
@@ -138,6 +138,19 @@ def build_rules(chosen_tag, direct_mode=False):
             "type": "field",
             "inboundTag": ["dns-in"],
             "outboundTag": "dns-out"
+        },
+        # Ловим DNS через DoH, которые прошли мимо dnsmasq (например, от браузера) и направляем в direct
+        {
+            "type": "field",
+            "domain": [
+                        "common.dot.dns.yandex.net",
+                        "cloudflare-dns.com",
+                        "dns.google",
+                        "dns.quad9.net",
+                        "doh.opendns.com",
+                        "dns.nextdns.io"
+            ],
+            "outboundTag": "direct"
         },
         # Блокировка рекламы
         {
