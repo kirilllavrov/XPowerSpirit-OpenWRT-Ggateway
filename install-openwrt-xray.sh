@@ -1,6 +1,6 @@
 #!/bin/sh
 # OpenWrt 25.12.x — Xray TProxy (IPv4-only)
-# Cudy как прозрачный шлюз (Keenetic как основной роутер)
+# Роутер как прозрачный шлюз
 
 # Логируем установку
 LOG_FILE="/tmp/xray_install.log"
