@@ -147,21 +147,8 @@ echo "3. Отключаем IPv6..."
 
 uci set network.lan.ipv6='0'
 uci set network.wan.ipv6='0'
-uci set dhcp.lan.dhcpv6='disabled'
-uci set dhcp.lan.ra='disabled'
 uci -q delete network.wan6
 uci commit network
-uci commit dhcp
-
-service odhcpd stop 2>/dev/null || true
-service odhcpd disable 2>/dev/null || true
-
-service network restart
-sleep 3
-for i in $(seq 1 10); do
-	ip link show br-lan >/dev/null 2>&1 && break
-	sleep 1
-done
 
 echo "[+] IPv6 отключён"
 
@@ -584,6 +571,8 @@ echo "[+] Hotplug для автообновления после включен�
 # =============================================
 echo "12. Запускаем службы..."
 
+service odhcpd stop 2>/dev/null || true
+service odhcpd disable 2>/dev/null || true
 service dnsmasq stop 2>/dev/null || true
 service dnsmasq disable 2>/dev/null || true
 uci set dhcp.lan.ignore='1'
