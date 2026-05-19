@@ -300,6 +300,11 @@ if [ -n "$DWL_DOMAIN" ]; then
 	sed -i "s/DOMAIN_WHITELIST = \[/DOMAIN_WHITELIST = [\n    \"$DWL_DOMAIN\",/" "$GENERATOR"
 fi
 
+# Заменяем 0.0.0.0 на LAN_IP в xray-generate-config.py
+sed -i '/"tag": "dns-in"/,/}/ {
+    s/"listen": "[0-9.]*"/"listen": "'"$LAN_IP"'"/
+}' /usr/share/xray/xray-generate-config.py
+
 echo "[+] Все скрипты загружены и готовы к использованию"
 
 # =============================================
@@ -493,6 +498,15 @@ if [ ! -s "$CONFIG_JSON" ]; then
 	exit 1
 fi
 echo "  ✓ config.json создан"
+
+echo "  → Проверяем config.json для Xray на валидность..."
+if xray run -test -config "$CONFIG_JSON" >/dev/null 2>&1; then
+	echo "  ✓ $CONFIG_JSON прошел проверку"
+else
+	echo "  [X] $CONFIG_JSON НЕ прошел проверку!"
+	exit 1
+fi
+
 echo ""
 echo "[+] Геофайлы загружены, конфиг сгенерирован"
 
@@ -545,55 +559,10 @@ EOF
 chmod +x /etc/hotplug.d/iface/99-xray-autoupdate
 echo "[+] Hotplug для автообновления после поднятия LAN настроен"
 
-# =============================================
-# 12. Запуск и рестарт служб
-# =============================================
-echo "12. Запускаем службы..."
-
-service odhcpd stop 2>/dev/null || true
-service odhcpd disable 2>/dev/null || true
-service dnsmasq stop 2>/dev/null || true
-service dnsmasq disable 2>/dev/null || true
-uci set dhcp.lan.ignore='1'
-uci commit dhcp
-sleep 2
-
-service cron restart
-service firewall restart
-
-sleep 3
-service xray start
-sleep 3
-
-echo "[+] Службы запущены"
-
-sleep 3
-
-# =============================================
-# 13. Проверяем config.json и Xray
-# =============================================
-echo "13. Проверяем config.json для Xray на валидность..."
-if xray run -test -config "$CONFIG_JSON" >/dev/null 2>&1; then
-	echo "  ✓ $CONFIG_JSON прошел проверку"
-else
-	echo "  [X] $CONFIG_JSON НЕ прошел проверку!"
-	exit 1
-fi
-
-echo "  → Проверяем, запущен ли Xray:"
-if pgrep -a xray >/dev/null; then
-	echo "  ✓ Xray запущен"
-else
-	echo "  [X] Xray НЕ запущен"
-fi
-
-echo ""
-echo "=== Установка Xray завершена ==="
-
 #=============================================
-# 14. Настройка сети для прозрачного шлюза
+# 12. Настройка сети для прозрачного шлюза
 # =============================================
-echo "14. Настройка сети для прозрачного шлюза..."
+echo "12. Настройка сети для прозрачного шлюза..."
 
 # Настраиваем статический IP для роутера
 uci set network.lan.ipaddr="$LAN_IP"
@@ -601,6 +570,11 @@ uci set network.lan.netmask="$LAN_NETMASK"
 uci set network.lan.gateway="$GATEWAY"
 uci set network.lan.dns="$DNS_SERVER 1.0.0.1"
 uci commit network
+service odhcpd stop 2>/dev/null || true
+service odhcpd disable 2>/dev/null || true
+service dnsmasq stop 2>/dev/null || true
+service dnsmasq disable 2>/dev/null || true
+sleep 2
 echo "[+] DHCP на роутере отключён"
 echo "[+] Роутер настроен: IP=$LAN_IP, шлюз=$GATEWAY, DNS=$DNS_SERVER 1.0.0.1"
 
@@ -610,6 +584,7 @@ if [ -f "$NFT_UPDATER" ]; then
 	echo "[+] IP в nftables обновлён: $LAN_IP"
 fi
 
+echo ""
 echo ""
 echo "=== Установка Xray завершена ==="
 echo "=== Роутер настроен как прозрачный шлюз ==="
