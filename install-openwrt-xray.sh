@@ -29,8 +29,8 @@ GEO_DIR="/usr/share/xray"
 STATE_DIR="/etc/xray/state"
 
 # Настройки сети Cudy (можно переопределить через аргументы)
-CUDY_IP="192.168.1.120"
-CUDY_NETMASK="255.255.255.0"
+LAN_IP="192.168.1.120"
+LAN_NETMASK="255.255.255.0"
 GATEWAY="192.168.1.1"
 DNS_SERVER="127.0.0.1"
 
@@ -42,7 +42,7 @@ for arg in "$@"; do
 	case $arg in
 	--sub=*) SUB_URL="${arg#*=}" ;;
 	--dwl=*) DWL_DOMAIN="${arg#*=}" ;;
-	--cudy-ip=*) CUDY_IP="${arg#*=}" ;;
+	--lan-ip=*) LAN_IP="${arg#*=}" ;;
 	--gateway=*) GATEWAY="${arg#*=}" ;;
 	*) echo "[!] Неизвестный аргумент: $arg" ;;
 	esac
@@ -141,38 +141,9 @@ chmod 600 "$SUB_FILE"
 echo "[+] Подписка сохранена: $SUB_URL"
 
 # =============================================
-# 3. Настройка сети Cudy
+# 3. Отключаем IPv6
 # =============================================
-echo "3. Настройка сети Cudy как прозрачного шлюза..."
-
-# Отключаем DHCP-сервер на Cudy (Keenetic раздаёт IP)
-uci set dhcp.lan.ignore='1'
-uci commit dhcp
-/etc/init.d/dnsmasq stop 2>/dev/null
-/etc/init.d/dnsmasq disable
-
-# Настраиваем статический IP для Cudy
-uci set network.lan.ipaddr="$CUDY_IP"
-uci set network.lan.netmask="$CUDY_NETMASK"
-uci set network.lan.gateway="$GATEWAY"
-uci set network.lan.dns="$DNS_SERVER 1.0.0.1"
-uci commit network
-
-# Перезапускаем сеть
-service network restart
-sleep 3
-for i in $(seq 1 10); do
-	ip link show br-lan >/dev/null 2>&1 && break
-	sleep 1
-done
-
-echo "[+] Cudy настроен: IP=$CUDY_IP, шлюз=$GATEWAY, DNS=$DNS_SERVER 1.0.0.1"
-echo "[+] DHCP на Cudy отключён"
-
-# =============================================
-# 4. Отключаем IPv6
-# =============================================
-echo "4. Отключаем IPv6..."
+echo "3. Отключаем IPv6..."
 
 uci set network.lan.ipv6='0'
 uci set network.wan.ipv6='0'
@@ -182,8 +153,8 @@ uci -q delete network.wan6
 uci commit network
 uci commit dhcp
 
-/etc/init.d/odhcpd stop 2>/dev/null || true
-/etc/init.d/odhcpd disable 2>/dev/null || true
+service odhcpd stop 2>/dev/null || true
+service odhcpd disable 2>/dev/null || true
 
 service network restart
 sleep 3
@@ -195,9 +166,9 @@ done
 echo "[+] IPv6 отключён"
 
 # =============================================
-# 5. Установка Xray из GitHub
+# 4. Установка Xray из GitHub
 # =============================================
-echo "5. Устанавливаем Xray из GitHub..."
+echo "4. Устанавливаем Xray из GitHub..."
 
 # Ждём доступности GitHub API
 for i in $(seq 1 10); do
@@ -315,9 +286,9 @@ else
 fi
 
 # =============================================
-# 6. Загружаем скрипты из репозитория
+# 5. Загружаем скрипты из репозитория
 # =============================================
-echo "6. Загружаем скрипты из репозитория..."
+echo "5. Загружаем скрипты из репозитория..."
 
 download() {
 	local url="$1"
@@ -345,26 +316,9 @@ fi
 echo "[+] Все скрипты загружены и готовы к использованию"
 
 # =============================================
-# 7. DNS настройки (dnsmasq отключён, Xray сам слушает 53)
+# 6. Создаём init.d для Xray
 # =============================================
-echo "7. Настройка DNS (dnsmasq отключён, Xray слушает порт 53)..."
-
-# dnsmasq уже отключён в разделе 3, убеждаемся
-if /etc/init.d/dnsmasq enabled 2>/dev/null; then
-	/etc/init.d/dnsmasq disable
-fi
-/etc/init.d/dnsmasq stop 2>/dev/null
-
-# Удаляем dnsmasq из настроек DHCP
-uci set dhcp.@dnsmasq[0].ignore='1'
-uci commit dhcp
-
-echo "[+] DNSmasq отключён, порт 53 освобождён для Xray"
-
-# =============================================
-# 8. Создаём init.d для Xray
-# =============================================
-echo "8. Создаём init.d для Xray..."
+echo "6. Создаём init.d для Xray..."
 
 cat >/etc/init.d/xray <<'XRAYEOF'
 #!/bin/sh /etc/rc.common
@@ -444,9 +398,9 @@ chmod +x /etc/init.d/xray
 echo "[+] init.d для Xray создан и включён"
 
 # =============================================
-# 9. Настраиваем routing
+# 7. Настраиваем routing
 # =============================================
-echo "9. Настраиваем routing..."
+echo "7. Настраиваем routing..."
 
 if ! grep -q "^100[[:space:]]\+xray$" /etc/iproute2/rt_tables; then
 	echo "100 xray" >>/etc/iproute2/rt_tables
@@ -455,9 +409,9 @@ fi
 echo "[+] Routing настроен"
 
 # =============================================
-# 10. Настраиваем sysctl
+# 8. Настраиваем sysctl
 # =============================================
-echo "10. Настраиваем sysctl:"
+echo "8. Настраиваем sysctl:"
 
 sysctl -w net.ipv4.conf.all.route_localnet=1
 sysctl -w net.ipv4.ip_forward=1
@@ -471,9 +425,9 @@ sysctl -p /etc/sysctl.d/99-xray.conf >/dev/null 2>&1
 echo "[+] Sysctl настроен"
 
 # =============================================
-# 11. Geo + HWID + config.json
+# 9. Geo + HWID + config.json
 # =============================================
-echo "11. Скачиваем геофайлы, делаем HWID, генерируем config.json..."
+echo "9. Скачиваем геофайлы, делаем HWID, генерируем config.json..."
 
 update_geo() {
 	local URL="$1"
@@ -559,9 +513,9 @@ echo ""
 echo "[+] Геофайлы загружены, конфиг сгенерирован"
 
 # =============================================
-# 12. Cron: автообновление в 2.30 ночи
+# 10. Cron: автообновление в 2.30 ночи
 # =============================================
-echo "12. Настройка Crontab..."
+echo "10. Настройка Crontab..."
 
 uci set system.@system[0].cronloglevel='9'
 uci commit system
@@ -578,9 +532,9 @@ else
 fi
 
 # =============================================
-# 13. Настройка hotplug (автообновление после включения WAN)
+# 11. Настройка hotplug (автообновление после включения WAN)
 # =============================================
-echo "13. Настройка hotplug..."
+echo "11. Настройка hotplug..."
 
 cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 #!/bin/sh
@@ -605,9 +559,15 @@ chmod +x /etc/hotplug.d/iface/99-xray-autoupdate
 echo "[+] Hotplug для автообновления после включения WAN настроен"
 
 # =============================================
-# 14. Запуск и рестарт служб
+# 12. Запуск и рестарт служб
 # =============================================
-echo "14. Запускаем службы..."
+echo "12. Запускаем службы..."
+
+service dnsmasq stop 2>/dev/null || true
+service dnsmasq disable 2>/dev/null || true
+uci set dhcp.lan.ignore='1'
+uci commit dhcp
+sleep 2
 
 service cron restart
 service firewall restart
@@ -616,16 +576,14 @@ sleep 3
 service xray start
 sleep 3
 
-# dnsmasq не запускаем (он отключён)
-
 echo "[+] Службы запущены"
 
 sleep 3
 
 # =============================================
-# 15. Проверяем config.json и Xray
+# 13. Проверяем config.json и Xray
 # =============================================
-echo "15. Проверяем config.json для Xray на валидность..."
+echo "13. Проверяем config.json для Xray на валидность..."
 if xray run -test -config "$CONFIG_JSON" >/dev/null 2>&1; then
 	echo "  ✓ $CONFIG_JSON прошел проверку"
 else
@@ -641,6 +599,33 @@ else
 fi
 
 echo ""
-echo "=== Установка завершена ==="
-echo "=== Cudy настроен как прозрачный шлюз ==="
-echo "=== IP Cudy: $CUDY_IP ==="
+echo "=== Установка Xray завершена ==="
+
+#=============================================
+# 14. Настройка сети для прозрачного шлюза
+# =============================================
+echo "14. Настройка сети для прозрачного шлюза..."
+
+# Настраиваем статический IP для роутера
+uci set network.lan.ipaddr="$LAN_IP"
+uci set network.lan.netmask="$LAN_NETMASK"
+uci set network.lan.gateway="$GATEWAY"
+uci set network.lan.dns="$DNS_SERVER 1.0.0.1"
+uci commit network
+echo "[+] DHCP на роутере отключён"
+echo "[+] Роутер настроен: IP=$LAN_IP, шлюз=$GATEWAY, DNS=$DNS_SERVER 1.0.0.1"
+
+# Обновляем IP в nftables скрипте для корректного bypass управления
+if [ -f "$NFT_UPDATER" ]; then
+	sed -i "s/ip daddr [0-9.]\+ tcp dport/ip daddr $LAN_IP tcp dport/" "$NFT_UPDATER"
+	echo "[+] IP в nftables обновлён: $LAN_IP"
+fi
+
+echo ""
+echo "=== Установка Xray завершена ==="
+echo "=== Роутер настроен как прозрачный шлюз ==="
+echo "=== IP роутера после перезагрузки: $LAN_IP ==="
+echo ""
+echo "Перезагружаем роутер для применения всех настроек..."
+
+reboot
