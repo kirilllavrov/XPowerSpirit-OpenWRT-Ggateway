@@ -539,7 +539,7 @@ echo "11. Настройка hotplug..."
 cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
-[ "$INTERFACE" = "wan" ] || exit 0
+[ "$INTERFACE" = "lan" ] || exit 0
 
 if ! pidof xray >/dev/null; then
     /etc/init.d/xray start
@@ -556,7 +556,7 @@ done
 EOF
 
 chmod +x /etc/hotplug.d/iface/99-xray-autoupdate
-echo "[+] Hotplug для автообновления после включения WAN настроен"
+echo "[+] Hotplug для автообновления после включения LAN настроен"
 
 # =============================================
 # 12. Запуск и рестарт служб
