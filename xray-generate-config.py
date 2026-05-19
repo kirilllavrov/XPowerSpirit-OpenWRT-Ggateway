@@ -121,7 +121,7 @@ def base_config():
             },
             {
                 "tag": "dns-in",
-                "listen": "192.168.1.120",
+                "listen": "0.0.0.0",
                 "port": 53,
                 "protocol": "dokodemo-door",
                 "settings": {
