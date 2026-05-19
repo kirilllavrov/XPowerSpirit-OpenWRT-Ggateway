@@ -66,12 +66,11 @@ def choose_best_server(servers):
 def base_config():
     return {
         "log": {
-            "loglevel": "none",
+            "loglevel": "debug",
             "access": "/tmp/log/xray-access.log",
             "error": "/tmp/log/xray-error.log"
         },
         "dns": {
-            "tag": "dns-inbuilt",
             "queryStrategy": "UseIPv4",
             "disableCache": False,
             "serveStale": True,
@@ -222,7 +221,7 @@ def main():
                 "protocol": "dns",
                 "tag": "dns-out",
                 "settings": {
-                    "rules": [{"action": "hijack", "qtype": "1,28"}]
+                    "rules": [{"action": "hijack", "qtype": ["A", "AAAA"]}]
                 }
             }
         ]
