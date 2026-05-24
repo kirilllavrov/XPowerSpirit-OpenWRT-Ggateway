@@ -1,6 +1,9 @@
 #!/bin/sh
 # OpenWrt 25.12.x — Xray TProxy (IPv4-only)
 # Роутер как прозрачный шлюз
+# Поддерживает два формата подписки:
+#   - Base64 (VLESS URI) - User-Agent: OpenWrt-Xray/1.0
+#   - JSON (Happ/Sing-box) - User-Agent: happ/3.21 или singbox
 
 # Логируем установку
 LOG_FILE="/tmp/xray_install.log"
@@ -36,11 +39,15 @@ DNS_SERVER="127.0.0.1"
 
 DWL_DOMAIN=""
 SUB_URL=""
+SUB_USER_AGENT="OpenWrt-Xray/1.0"
+REMARKS_FILTER=""
 
 # Парсер аргументов
 for arg in "$@"; do
 	case $arg in
 	--sub=*) SUB_URL="${arg#*=}" ;;
+	--sub-ua=*) SUB_USER_AGENT="${arg#*=}" ;;
+	--remarks=*) REMARKS_FILTER="${arg#*=}" ;;
 	--dwl=*) DWL_DOMAIN="${arg#*=}" ;;
 	--lan-ip=*) LAN_IP="${arg#*=}" ;;
 	--gateway=*) GATEWAY="${arg#*=}" ;;
@@ -58,64 +65,41 @@ fi
 mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
 
 # =============================================
-# Единые функции загрузки (curl)
+#   ЕДИНАЯ ФУНКЦИЯ ЗАГРУЗКИ
 # =============================================
 
-# Базовая загрузка файла
-fetch_url() {
-	local url="$1"
-	local dst="$2"
-	local max_retries=3
-	local retry=1
+# Универсальная загрузка файла (с поддержкой кастомных заголовков)
+download_file() {
+    local url="$1"
+    local dst="$2"
+    shift 2
+    local max_retries=3
+    local retry=1
+    local curl_cmd="curl -s -L --max-time 15"
+    
+    for header in "$@"; do
+        curl_cmd="$curl_cmd -H \"$header\""
+    done
+    
+    while [ $retry -le $max_retries ]; do
+        eval $curl_cmd -o "$dst" "$url"
+        local rc=$?
 
-	while [ $retry -le $max_retries ]; do
-		curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 -o "$dst" "$url"
-		local rc=$?
+        if [ $rc -eq 0 ] && [ -s "$dst" ]; then
+            if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
+                rm -f "$dst"
+            else
+                return 0
+            fi
+        fi
 
-		if [ $rc -eq 0 ] && [ -s "$dst" ]; then
-			if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
-				rm -f "$dst"
-			else
-				return 0
-			fi
-		fi
+        if [ $retry -lt $max_retries ]; then
+            sleep 2
+        fi
+        retry=$((retry + 1))
+    done
 
-		if [ $retry -lt $max_retries ]; then
-			sleep 2
-		fi
-		retry=$((retry + 1))
-	done
-
-	return 1
-}
-
-# Загрузка с кастомным заголовком (для подписки)
-fetch_url_with_header() {
-	local url="$1"
-	local dst="$2"
-	local header="$3"
-	local max_retries=2
-	local retry=1
-
-	while [ $retry -le $max_retries ]; do
-		curl -s -L --user-agent "OpenWrt-Xray/1.0" -H "$header" --max-time 20 -o "$dst" "$url"
-		local rc=$?
-
-		if [ $rc -eq 0 ] && [ -s "$dst" ]; then
-			if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
-				rm -f "$dst"
-			else
-				return 0
-			fi
-		fi
-
-		if [ $retry -lt $max_retries ]; then
-			sleep 2
-		fi
-		retry=$((retry + 1))
-	done
-
-	return 1
+    return 1
 }
 
 # =============================================
@@ -133,12 +117,22 @@ ntpd -q -p 77.88.8.8 2>/dev/null ||
 echo "[+] Timezone установлен в Europe/Moscow, время синхронизировано"
 
 # =============================================
-# 2. Сохраняем подписку
+# 2. Сохраняем подписку и настройки
 # =============================================
-echo "2. Сохраняем подписку..."
+echo "2. Сохраняем подписку и настройки..."
 echo "$SUB_URL" >"$SUB_FILE"
 chmod 600 "$SUB_FILE"
 echo "[+] Подписка сохранена: $SUB_URL"
+
+echo "$SUB_USER_AGENT" > "$CONFIG_DIR/sub_user_agent"
+echo "[+] User-Agent сохранён: $SUB_USER_AGENT"
+
+if [ -n "$REMARKS_FILTER" ]; then
+    echo "$REMARKS_FILTER" > "$CONFIG_DIR/sub_remarks"
+    echo "[+] Фильтр remarks сохранён: $REMARKS_FILTER"
+else
+    rm -f "$CONFIG_DIR/sub_remarks"
+fi
 
 # =============================================
 # 3. Отключаем IPv6
@@ -212,7 +206,7 @@ else
 	echo "  → URL: ${ZIP_URL}.dgst"
 
 	echo "  → Скачиваем .dgst для Xray..."
-	fetch_url "${ZIP_URL}.dgst" "$DGST_FILE" || {
+	download_file "${ZIP_URL}.dgst" "$DGST_FILE" || {
 		echo "  [X] Ошибка: не удалось скачать .dgst для Xray"
 		exit 1
 	}
@@ -242,7 +236,7 @@ else
 		echo "  ✓ Найден локальный ZIP с тем же SHA, повторное скачивание не требуется"
 	else
 		echo "  → Скачиваем Xray ZIP (${LATEST_VERSION})..."
-		fetch_url "$ZIP_URL" "$ZIP_DEST" || {
+		download_file "$ZIP_URL" "$ZIP_DEST" || {
 			echo "  [X] Ошибка: не удалось скачать Xray ZIP"
 			exit 1
 		}
@@ -277,11 +271,11 @@ fi
 # =============================================
 echo "5. Загружаем скрипты из репозитория..."
 
-download() {
+download_script() {
 	local url="$1"
 	local dst="$2"
 
-	if fetch_url "$url" "$dst"; then
+	if download_file "$url" "$dst"; then
 		chmod +x "$dst"
 		echo "  → $dst"
 	else
@@ -290,20 +284,21 @@ download() {
 	fi
 }
 
-download "$REPO/xray-generate-config.py" "$GENERATOR"
-download "$REPO/xray-sub-parser.py" "$PARSER"
-download "$REPO/update-xray.sh" "$UPDATER"
-download "$REPO/update-nft.sh" "$NFT_UPDATER"
+download_script "$REPO/xray-generate-config.py" "$GENERATOR"
+download_script "$REPO/xray-sub-parser.py" "$PARSER"
+download_script "$REPO/update-xray.sh" "$UPDATER"
+download_script "$REPO/update-nft.sh" "$NFT_UPDATER"
 
 if [ -n "$DWL_DOMAIN" ]; then
 	echo "  → Добавляем домен в whitelist: $DWL_DOMAIN"
 	sed -i "s/DOMAIN_WHITELIST = \[/DOMAIN_WHITELIST = [\n    \"$DWL_DOMAIN\",/" "$GENERATOR"
 fi
 
-# Заменяем 0.0.0.0 на LAN_IP в xray-generate-config.py
+# Заменяем 0.0.0.0 на LAN_IP в xray-generate-config.py для DNS inbound
 sed -i '/"tag": "dns-in"/,/}/ {
-    s/"listen": "[0-9.]*"/"listen": "'"$LAN_IP"'"/
-}' /usr/share/xray/xray-generate-config.py
+    s/"listen": "[0-9.]*"/"listen": "'"$LAN_IP"'"/;
+    s/"listen": "0\.0\.0\.0"/"listen": "'"$LAN_IP"'"/g
+}' /usr/share/xray/xray-generate-config.py 2>/dev/null || true
 
 echo "[+] Все скрипты загружены и готовы к использованию"
 
@@ -328,11 +323,9 @@ start_service() {
     logger -t xray "Time sync failed, continuing anyway"
     sleep 1
 
-    # Применяем базовые nftables правила (без резолвинга прокси)
+    # Применяем базовые nftables правила
     if [ -x /usr/share/xray/update-nft.sh ]; then
-        /usr/share/xray/update-nft.sh --no-resolve &
-    else
-        logger -t xray "update-nft.sh not found or not executable"
+        /usr/share/xray/update-nft.sh &
     fi
 
     # Проверяем наличие геофайлов
@@ -361,7 +354,7 @@ start_service() {
     if ! pidof xray >/dev/null; then
         logger -t xray "Xray failed to start — disabling TProxy"
         nft delete table inet xray 2>/dev/null
-        while ip rule del fwmark 2 table 100 2>/dev/null; do :; done
+        while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
         ip route flush table 100 2>/dev/null
         return 1
     fi
@@ -371,7 +364,7 @@ start_service() {
 
 stop_service() {
     nft delete table inet xray 2>/dev/null
-    while ip rule del fwmark 2 table 100 2>/dev/null; do :; done
+    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null
     logger -t xray "Stopped, network cleaned"
 }
@@ -414,7 +407,7 @@ sysctl -p /etc/sysctl.d/99-xray.conf >/dev/null 2>&1
 echo "[+] Sysctl настроен"
 
 # =============================================
-# 9. Geo + HWID + config.json
+# 9. Geo + HWID + config.json (с поддержкой двух форматов)
 # =============================================
 echo "9. Скачиваем геофайлы, делаем HWID, генерируем config.json..."
 
@@ -429,7 +422,7 @@ update_geo() {
 
 	echo "  → Скачиваем $BASE"
 
-	fetch_url "${URL}.sha256sum" "$TMP_SHA" || {
+	download_file "${URL}.sha256sum" "$TMP_SHA" || {
 		echo "  [X] Не удалось получить SHA256 для $BASE" >>"$LOG_FILE"
 		exit 1
 	}
@@ -440,7 +433,7 @@ update_geo() {
 		exit 1
 	fi
 
-	fetch_url "$URL" "$TMP" || {
+	download_file "$URL" "$TMP" || {
 		echo "  [X] Не удалось скачать $BASE" >>"$LOG_FILE"
 		exit 1
 	}
@@ -475,27 +468,65 @@ echo "$HWID" >"$HWID_FILE"
 chmod 600 "$HWID_FILE"
 echo "  ✓ HWID сохранён: $HWID"
 
-echo "  → Генерируем config.json из подписки..."
-if fetch_url_with_header "$SUB_URL" "/tmp/sub_raw.txt" "x-hwid: $HWID"; then
-	python3 "$PARSER" <"/tmp/sub_raw.txt" >"/tmp/parsed_outbounds.json" || {
-		echo "  [X] Ошибка парсера подписки"
-		rm -f "/tmp/sub_raw.txt"
-		exit 1
-	}
-	python3 "$GENERATOR" --output "$CONFIG_JSON" <"/tmp/parsed_outbounds.json" || {
-		echo "  [X] Ошибка генератора конфига"
-		rm -f "/tmp/sub_raw.txt" "/tmp/parsed_outbounds.json"
-		exit 1
-	}
-	rm -f "/tmp/sub_raw.txt" "/tmp/parsed_outbounds.json"
+echo "  → Генерируем config.json из подписки (User-Agent: $SUB_USER_AGENT)..."
+
+# Скачиваем подписку с заголовками
+if download_file "$SUB_URL" "/tmp/sub_raw.txt" "User-Agent: $SUB_USER_AGENT" "x-hwid: $HWID"; then
+    
+    # Проверяем, что скачалось не HTML
+    if head -n 1 "/tmp/sub_raw.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
+        echo "  [X] Подписка вернула HTML, а не данные"
+        rm -f "/tmp/sub_raw.txt"
+        exit 1
+    fi
+    
+    # Определяем формат по User-Agent
+    case "$SUB_USER_AGENT" in
+        *happ*|*Happ*|*HAPP*|*singbox*|*Singbox*|*sfa*|*sfi*|*sfm*|*sft*|*karing*)
+            # JSON формат (Happ, Sing-box, Karing)
+            echo "  → Используем JSON формат (прямая генерация)"
+            if [ -n "$REMARKS_FILTER" ]; then
+                echo "  → Фильтр remarks: $REMARKS_FILTER"
+                python3 "$GENERATOR" --format json --remarks "$REMARKS_FILTER" --output "$CONFIG_JSON" < "/tmp/sub_raw.txt" 2>>"$LOG_FILE"
+            else
+                python3 "$GENERATOR" --format json --output "$CONFIG_JSON" < "/tmp/sub_raw.txt" 2>>"$LOG_FILE"
+            fi
+            if [ $? -eq 0 ]; then
+                echo "  ✓ config.json создан (JSON формат)"
+            else
+                echo "  [X] Ошибка генератора конфига (JSON)"
+                rm -f "/tmp/sub_raw.txt"
+                exit 1
+            fi
+            ;;
+        *)
+            # Base64 формат (VLESS URI)
+            echo "  → Используем Base64 формат (VLESS URI -> парсер)"
+            if python3 "$PARSER" < "/tmp/sub_raw.txt" > "/tmp/parsed_outbounds.json" 2>>"$LOG_FILE"; then
+                if python3 "$GENERATOR" --format vless --output "$CONFIG_JSON" < "/tmp/parsed_outbounds.json" 2>>"$LOG_FILE"; then
+                    echo "  ✓ config.json создан (VLESS формат)"
+                else
+                    echo "  [X] Ошибка генератора конфига (VLESS)"
+                    rm -f "/tmp/sub_raw.txt" "/tmp/parsed_outbounds.json"
+                    exit 1
+                fi
+            else
+                echo "  [X] Ошибка парсера подписки (VLESS)"
+                rm -f "/tmp/sub_raw.txt"
+                exit 1
+            fi
+            rm -f "/tmp/parsed_outbounds.json"
+            ;;
+    esac
+    rm -f "/tmp/sub_raw.txt"
 else
-	echo "  [X] Не удалось скачать подписку"
-	exit 1
+    echo "  [X] Не удалось скачать подписку"
+    exit 1
 fi
 
 if [ ! -s "$CONFIG_JSON" ]; then
-	echo "  [X] Ошибка: не удалось создать config.json" >>"$LOG_FILE"
-	exit 1
+    echo "  [X] Ошибка: не удалось создать config.json" >>"$LOG_FILE"
+    exit 1
 fi
 echo "  ✓ config.json создан"
 
@@ -541,7 +572,7 @@ cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 
 # Ждём появления интернета (до 2 минут)
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    # Проверяем доступность шлюза (Keenetic)
+    # Проверяем доступность шлюза
     if ping -c1 -W2 192.168.1.1 >/dev/null 2>&1; then
         # Проверяем DNS через resolveip
         if resolveip -4 google.com 77.88.8.8 >/dev/null 2>&1; then
@@ -568,21 +599,18 @@ echo "12. Настройка сети для прозрачного шлюза..
 uci set network.lan.ipaddr="$LAN_IP"
 uci set network.lan.netmask="$LAN_NETMASK"
 uci set network.lan.gateway="$GATEWAY"
-uci set network.lan.dns="$DNS_SERVER 1.0.0.1"
+uci set network.lan.dns="1.0.0.1"
 uci commit network
+
+# Отключаем лишние службы
 service odhcpd stop 2>/dev/null || true
 service odhcpd disable 2>/dev/null || true
 service dnsmasq stop 2>/dev/null || true
 service dnsmasq disable 2>/dev/null || true
+
 sleep 2
 echo "[+] DHCP на роутере отключён"
-echo "[+] Роутер настроен: IP=$LAN_IP, шлюз=$GATEWAY, DNS=$DNS_SERVER 1.0.0.1"
-
-# Обновляем IP в nftables скрипте для корректного bypass управления
-if [ -f "$NFT_UPDATER" ]; then
-	sed -i "s/ip daddr [0-9.]\+ tcp dport/ip daddr $LAN_IP tcp dport/" "$NFT_UPDATER"
-	echo "[+] IP в nftables обновлён: $LAN_IP"
-fi
+echo "[+] Роутер настроен: IP=$LAN_IP, шлюз=$GATEWAY, DNS=1.0.0.1"
 
 echo ""
 echo ""
