@@ -124,8 +124,13 @@ echo "$SUB_URL" >"$SUB_FILE"
 chmod 600 "$SUB_FILE"
 echo "[+] Подписка сохранена: $SUB_URL"
 
+# сохраняем User-Agent для использования в других скриптах
 echo "$SUB_USER_AGENT" > "$CONFIG_DIR/sub_user_agent"
 echo "[+] User-Agent сохранён: $SUB_USER_AGENT"
+
+# Сохраняем LAN_IP для использования в update-nft.sh
+echo "$LAN_IP" > "$CONFIG_DIR/lan_ip"
+echo "[+] LAN IP сохранён: $LAN_IP"
 
 if [ -n "$REMARKS_FILTER" ]; then
     echo "$REMARKS_FILTER" > "$CONFIG_DIR/sub_remarks"
