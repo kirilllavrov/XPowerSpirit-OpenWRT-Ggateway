@@ -220,7 +220,7 @@ def normalize_vless_outbound(ob: dict, chosen_tag: str) -> dict:
 def base_config() -> dict:
     return {
         "log": {
-            "loglevel": "none",
+            "loglevel": "info",
             "access": "/tmp/log/xray-access.log",
             "error": "/tmp/log/xray-error.log"
         },
