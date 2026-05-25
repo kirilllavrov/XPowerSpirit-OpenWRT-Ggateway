@@ -7,6 +7,9 @@ Xray Config Generator for OpenWrt TProxy (Cudy Gateway)
 
 Специальная обработка "hole":
   Если в подписке обнаружен outbound с address="hole", генерируется DIRECT-конфиг
+
+Балансировка:
+  Используется стратегия leastLoad с burstObservatory для выбора наиболее стабильного прокси.
 """
 
 import json
@@ -354,20 +357,31 @@ def build_rules(proxy_outbounds: list, direct_mode: bool = False) -> list:
 
 
 def build_balancer(proxy_outbounds: list) -> dict:
+    """Создаёт конфигурацию балансировщика для нескольких прокси (leastLoad)"""
     return {
         "tag": "balancer",
         "selector": [ob["tag"] for ob in proxy_outbounds],
-        "strategy": {"type": "leastPing"},
+        "strategy": {"type": "leastLoad"},
         "fallbackTag": "direct"
     }
 
 
-def build_observatory(proxy_outbounds: list) -> dict:
+def build_burst_observatory(proxy_outbounds: list) -> dict:
+    """
+    Создаёт конфигурацию burstObservatory для мониторинга прокси.
+    Используется со стратегией leastLoad.
+    """
     return {
-        "subjectSelector": [ob["tag"] for ob in proxy_outbounds],
-        "probeURL": "https://www.google.com/generate_204",
-        "probeInterval": "300s",
-        "enableConcurrency": True
+        "burstObservatory": {
+            "subjectSelector": [ob["tag"] for ob in proxy_outbounds],
+            "pingConfig": {
+                "destination": "https://www.google.com/generate_204",
+                "interval": "1m",
+                "sampling": 10,
+                "timeout": "5s",
+                "httpMethod": "HEAD"
+            }
+        }
     }
 
 
@@ -420,7 +434,9 @@ def main():
         dns_outbound = build_dns_outbound()
         
         cfg["outbounds"] = proxy_outbounds + [direct_outbound, block_outbound, dns_outbound]
-        cfg["observatory"] = build_observatory(proxy_outbounds)
+        
+        # Используем burstObservatory (для стратегии leastLoad)
+        cfg.update(build_burst_observatory(proxy_outbounds))
         
         routing = {"domainStrategy": "IPOnDemand", "rules": build_rules(proxy_outbounds)}
         if len(proxy_outbounds) > 1:
@@ -429,7 +445,7 @@ def main():
         
         print(f"  ✓ Сгенерировано {len(proxy_outbounds)} прокси", file=sys.stderr)
         if len(proxy_outbounds) > 1:
-            print(f"  ✓ Балансировщик: {len(proxy_outbounds)} серверов", file=sys.stderr)
+            print(f"  ✓ Балансировщик: {len(proxy_outbounds)} серверов (leastLoad)", file=sys.stderr)
         
     else:
         print("  → Обработка VLESS формата", file=sys.stderr)
