@@ -69,23 +69,27 @@ mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
 # =============================================
 
 # Универсальная загрузка файла (с поддержкой кастомных заголовков)
+# Использует curl с фиксированным User-Agent; кастомные заголовки передаются через доп. аргументы
 download_file() {
-    local url="$1"
-    local dst="$2"
+    url="$1"
+    dst="$2"
     shift 2
-    local max_retries=3
-    local retry=1
-    local curl_cmd="curl -s -L --max-time 15"
-    
-    for header in "$@"; do
-        curl_cmd="$curl_cmd -H \"$header\""
-    done
-    
-    while [ $retry -le $max_retries ]; do
-        eval $curl_cmd -o "$dst" "$url"
-        local rc=$?
+    max_retries=3
+    retry=1
 
-        if [ $rc -eq 0 ] && [ -s "$dst" ]; then
+    while [ "$retry" -le "$max_retries" ]; do
+        # Собираем аргументы curl без eval: передаём заголовки в подстановке команд
+        # Каждый аргумент в отдельной строке для корректного word splitting
+        header_args=""
+        for h in "$@"; do
+            header_args="$header_args -H $h"
+        done
+
+        # shellcheck disable=SC2086
+        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 $header_args -o "$dst" "$url"
+        rc=$?
+
+        if [ "$rc" -eq 0 ] && [ -s "$dst" ]; then
             if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
                 rm -f "$dst"
             else
@@ -93,7 +97,7 @@ download_file() {
             fi
         fi
 
-        if [ $retry -lt $max_retries ]; then
+        if [ "$retry" -lt "$max_retries" ]; then
             sleep 2
         fi
         retry=$((retry + 1))
@@ -294,12 +298,6 @@ if [ -n "$DWL_DOMAIN" ]; then
 	sed -i "s/DOMAIN_WHITELIST = \[/DOMAIN_WHITELIST = [\n    \"$DWL_DOMAIN\",/" "$GENERATOR"
 fi
 
-# Заменяем 0.0.0.0 на LAN_IP в xray-generate-config.py для DNS inbound
-sed -i '/"tag": "dns-in"/,/}/ {
-    s/"listen": "[0-9.]*"/"listen": "'"$LAN_IP"'"/;
-    s/"listen": "0\.0\.0\.0"/"listen": "'"$LAN_IP"'"/g
-}' /usr/share/xray/xray-generate-config.py 2>/dev/null || true
-
 echo "[+] Все скрипты загружены и готовы к использованию"
 
 # =============================================
@@ -323,9 +321,9 @@ start_service() {
     logger -t xray "Time sync failed, continuing anyway"
     sleep 1
 
-    # Применяем базовые nftables правила
+    # Применяем базовые nftables правила (синхронно, перед запуском Xray)
     if [ -x /usr/share/xray/update-nft.sh ]; then
-        /usr/share/xray/update-nft.sh &
+        /usr/share/xray/update-nft.sh
     fi
 
     # Проверяем наличие геофайлов
@@ -336,6 +334,7 @@ start_service() {
     # Проверяем валидность конфига
     if ! xray run -test -config "$CONF" >/dev/null 2>&1; then
         logger -t xray "Invalid config.json — run update-xray.sh manually"
+        return 1
     fi
 
     # Запускаем Xray
@@ -480,6 +479,9 @@ if download_file "$SUB_URL" "/tmp/sub_raw.txt" "User-Agent: $SUB_USER_AGENT" "x-
         exit 1
     fi
     
+    # Сохраняем LAN_IP для update-xray.sh
+    echo "$LAN_IP" > "$CONFIG_DIR/lan_ip"
+
     # Определяем формат по User-Agent
     case "$SUB_USER_AGENT" in
         *happ*|*Happ*|*HAPP*|*singbox*|*Singbox*|*sfa*|*sfi*|*sfm*|*sft*|*karing*)
@@ -487,9 +489,9 @@ if download_file "$SUB_URL" "/tmp/sub_raw.txt" "User-Agent: $SUB_USER_AGENT" "x-
             echo "  → Используем JSON формат (прямая генерация)"
             if [ -n "$REMARKS_FILTER" ]; then
                 echo "  → Фильтр remarks: $REMARKS_FILTER"
-                python3 "$GENERATOR" --format json --remarks "$REMARKS_FILTER" --output "$CONFIG_JSON" < "/tmp/sub_raw.txt" 2>>"$LOG_FILE"
+                python3 "$GENERATOR" --format json --remarks "$REMARKS_FILTER" --listen-ip "$LAN_IP" --output "$CONFIG_JSON" < "/tmp/sub_raw.txt" 2>>"$LOG_FILE"
             else
-                python3 "$GENERATOR" --format json --output "$CONFIG_JSON" < "/tmp/sub_raw.txt" 2>>"$LOG_FILE"
+                python3 "$GENERATOR" --format json --listen-ip "$LAN_IP" --output "$CONFIG_JSON" < "/tmp/sub_raw.txt" 2>>"$LOG_FILE"
             fi
             if [ $? -eq 0 ]; then
                 echo "  ✓ config.json создан (JSON формат)"
@@ -503,7 +505,7 @@ if download_file "$SUB_URL" "/tmp/sub_raw.txt" "User-Agent: $SUB_USER_AGENT" "x-
             # Base64 формат (VLESS URI)
             echo "  → Используем Base64 формат (VLESS URI -> парсер)"
             if python3 "$PARSER" < "/tmp/sub_raw.txt" > "/tmp/parsed_outbounds.json" 2>>"$LOG_FILE"; then
-                if python3 "$GENERATOR" --format vless --output "$CONFIG_JSON" < "/tmp/parsed_outbounds.json" 2>>"$LOG_FILE"; then
+                if python3 "$GENERATOR" --format vless --listen-ip "$LAN_IP" --output "$CONFIG_JSON" < "/tmp/parsed_outbounds.json" 2>>"$LOG_FILE"; then
                     echo "  ✓ config.json создан (VLESS формат)"
                 else
                     echo "  [X] Ошибка генератора конфига (VLESS)"
@@ -575,7 +577,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
     # Проверяем доступность шлюза
     if ping -c1 -W2 192.168.1.1 >/dev/null 2>&1; then
         # Проверяем DNS через resolveip
-        if resolveip -4 google.com 77.88.8.8 >/dev/null 2>&1; then
+        if resolveip -4 google.com >/dev/null 2>&1; then
             logger -t xray-hotplug "Internet is reachable, running update-xray.sh"
             /usr/share/xray/update-xray.sh &
             exit 0

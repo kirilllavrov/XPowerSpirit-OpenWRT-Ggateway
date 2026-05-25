@@ -7,9 +7,18 @@ LAN_IF="br-lan"
 # Автоопределение LAN интерфейса, если br-lan отсутствует
 if ! ip link show br-lan >/dev/null 2>&1; then
     LAN_IF=$(uci -q get network.lan.device 2>/dev/null)
-    [ -z "$LAN_IF" ] && LAN_IF="br-lan"
+    [ -z "$LAN_IF" ] && {
+        logger -t update-nft "Не удалось определить LAN интерфейс"
+        exit 1
+    }
     logger -t update-nft "LAN интерфейс auto-detected: $LAN_IF"
 fi
+
+# Финальная проверка, что LAN_IF не пуст
+[ -z "$LAN_IF" ] && {
+    logger -t update-nft "LAN_IF пуст, невозможно применить правила"
+    exit 1
+}
 
 # Извлекаем IP‑адреса серверов из config.json
 extract_server_ips() {
@@ -50,9 +59,9 @@ except:
                 continue
                 ;;
             *[a-zA-Z]*)
-                # Домен — резолвим через 77.88.8.8 (Яндекс DNS, быстрый и надёжный)
+                # Домен — резолвим IP
                 local resolved
-                resolved=$(resolveip -4 "$addr" 77.88.8.8 2>/dev/null)
+                resolved=$(resolveip -4 "$addr" 2>/dev/null)
                 if [ -n "$resolved" ]; then
                     ips="$ips,$resolved"
                     logger -t update-nft "Resolved $addr → $resolved"
@@ -128,8 +137,8 @@ NFT
 
     cat >>"$nft_file" <<NFT
 
-        # 5. Bypass уже помеченного трафика (от самого Xray)
-        meta mark 0x1 return;
+        # 5. Bypass уже помеченного трафика (Xray выставляет mark 255, TProxy — 1)
+        meta mark != 0 return;
 
 		# 6. Блокируем UDP 443 (QUIC)
 		udp dport 443 drop;

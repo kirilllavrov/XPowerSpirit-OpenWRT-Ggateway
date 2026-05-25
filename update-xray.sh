@@ -132,6 +132,14 @@ if [ -f "$SUB_REMARKS_FILE" ]; then
     echo "→ Фильтр remarks: $REMARKS_FILTER" >>"$LOG"
 fi
 
+# Читаем LAN_IP для DNS inbound
+LAN_IP="0.0.0.0"
+LAN_IP_FILE="$CONFIG_DIR/lan_ip"
+if [ -f "$LAN_IP_FILE" ]; then
+    LAN_IP="$(cat "$LAN_IP_FILE" | tr -d '\n\r')"
+    echo "→ LAN_IP: $LAN_IP" >>"$LOG"
+fi
+
 # ============================
 #   Обновление Xray
 # ============================
@@ -140,7 +148,7 @@ echo "→ Проверка обновлений Xray..." >>"$LOG"
 
 # Ожидание доступности GitHub API
 for i in $(seq 1 5); do
-    if curl -s --max-time 3 https://api.github.com >/dev/null 2>&1; then
+    if curl -s --user-agent "OpenWrt-Xray/1.0" --max-time 3 https://api.github.com >/dev/null 2>&1; then
         break
     fi
     sleep 2
@@ -285,9 +293,9 @@ if curl -s -L -H "User-Agent: $SUB_USER_AGENT" -H "x-hwid: $HWID" "$SUB_URL" -o 
                 cp "$CONFIG_JSON" "$CONFIG_JSON.bak" 2>/dev/null || true
 
                 if [ -n "$REMARKS_FILTER" ]; then
-                    python3 "$GENERATOR" --format json --output "$TMP_DIR/config.json" --remarks "$REMARKS_FILTER" < "$TMP_DIR/sub.txt" 2>>"$LOG"
+                    python3 "$GENERATOR" --format json --listen-ip "$LAN_IP" --output "$TMP_DIR/config.json" --remarks "$REMARKS_FILTER" < "$TMP_DIR/sub.txt" 2>>"$LOG"
                 else
-                    python3 "$GENERATOR" --format json --output "$TMP_DIR/config.json" < "$TMP_DIR/sub.txt" 2>>"$LOG"
+                    python3 "$GENERATOR" --format json --listen-ip "$LAN_IP" --output "$TMP_DIR/config.json" < "$TMP_DIR/sub.txt" 2>>"$LOG"
                 fi
 
                 if [ -f "$TMP_DIR/config.json" ] && xray run -test -config "$TMP_DIR/config.json" >>"$LOG" 2>&1; then
@@ -310,7 +318,7 @@ if curl -s -L -H "User-Agent: $SUB_USER_AGENT" -H "x-hwid: $HWID" "$SUB_URL" -o 
                 cp "$CONFIG_JSON" "$CONFIG_JSON.bak" 2>/dev/null || true
                 
                 if python3 "$PARSER" < "$TMP_DIR/sub.txt" > "$TMP_DIR/parsed.json" 2>>"$LOG"; then
-                    if python3 "$GENERATOR" --format vless --output "$TMP_DIR/config.json" < "$TMP_DIR/parsed.json" 2>>"$LOG"; then
+                    if python3 "$GENERATOR" --format vless --listen-ip "$LAN_IP" --output "$TMP_DIR/config.json" < "$TMP_DIR/parsed.json" 2>>"$LOG"; then
                         if [ -f "$TMP_DIR/config.json" ] && xray run -test -config "$TMP_DIR/config.json" >>"$LOG" 2>&1; then
                             mv "$TMP_DIR/config.json" "$CONFIG_JSON"
                             echo "[+] Новый config.json установлен (VLESS формат)" >>"$LOG"

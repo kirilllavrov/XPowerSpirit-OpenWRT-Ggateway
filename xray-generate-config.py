@@ -49,7 +49,7 @@ def normalize_outbound(ob: dict) -> dict:
         ob["streamSettings"] = {}
     if "sockopt" not in ob["streamSettings"]:
         ob["streamSettings"]["sockopt"] = {}
-    ob["streamSettings"]["sockopt"]["mark"] = 0
+    ob["streamSettings"]["sockopt"]["mark"] = 255
     ob["streamSettings"]["sockopt"]["tcpNoDelay"] = True
     ob["streamSettings"]["sockopt"]["tcpKeepAliveInterval"] = 30
     if "mux" not in ob:
@@ -220,7 +220,7 @@ def normalize_vless_outbound(ob: dict, chosen_tag: str) -> dict:
 #   БАЗОВАЯ КОНФИГУРАЦИЯ
 # ============================================
 
-def base_config() -> dict:
+def base_config(listen_ip: str = "0.0.0.0") -> dict:
     return {
         "log": {
             "loglevel": "info",
@@ -278,7 +278,7 @@ def base_config() -> dict:
             },
             {
                 "tag": "dns-in",
-                "listen": "0.0.0.0",
+                "listen": listen_ip,
                 "port": 53,
                 "protocol": "dokodemo-door",
                 "settings": {
@@ -289,8 +289,8 @@ def base_config() -> dict:
     }
 
 
-def build_direct_config() -> dict:
-    cfg = base_config()
+def build_direct_config(listen_ip: str = "0.0.0.0") -> dict:
+    cfg = base_config(listen_ip)
     cfg["outbounds"] = [
         {"protocol": "freedom", "tag": "direct"},
         {"protocol": "blackhole", "tag": "block"},
@@ -304,14 +304,7 @@ def build_direct_config() -> dict:
     ]
     cfg["routing"] = {
         "domainStrategy": "IPOnDemand",
-        "rules": [
-            {"type": "field", "inboundTag": ["dns-in"], "outboundTag": "dns-out"},
-            {"type": "field", "domain": ["geosite:category-ads"], "outboundTag": "block"},
-            {"type": "field", "port": "123", "network": "udp", "outboundTag": "direct"},
-            {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
-            {"type": "field", "domain": ["geosite:private", "geosite:category-ru"], "outboundTag": "direct"},
-            {"type": "field", "network": "tcp,udp", "outboundTag": "direct"}
-        ]
+        "rules": build_rules([], direct_mode=True)
     }
     return cfg
 
@@ -396,6 +389,8 @@ def parse_args():
                         help='Input format: json (Happ/Sing-box) or vless (parsed outbounds)')
     parser.add_argument('--remarks', default='',
                         help='Filter outbounds by remarks (substring, case-insensitive). Only for JSON format')
+    parser.add_argument('--listen-ip', default='0.0.0.0',
+                        help='Listen IP for DNS inbound (default: 0.0.0.0)')
     return parser.parse_args()
 
 
@@ -413,7 +408,7 @@ def main():
         if has_hole_in_subscription(subscription):
             print("  [!] Обнаружен сервер 'hole' (срок подписки истёк).", file=sys.stderr)
             print("  [!] Включаем DIRECT-режим (весь трафик напрямую).", file=sys.stderr)
-            cfg = build_direct_config()
+            cfg = build_direct_config(args.listen_ip)
             with open(args.output, "w") as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
             print(f"  ✓ DIRECT-конфиг сохранён: {args.output}", file=sys.stderr)
@@ -424,11 +419,11 @@ def main():
             log_error("No valid outbounds found in JSON subscription")
             sys.exit(1)
         
-        cfg = base_config()
+        cfg = base_config(args.listen_ip)
         
         direct_outbound = {
             "protocol": "freedom", "tag": "direct",
-            "streamSettings": {"sockopt": {"mark": 0, "tcpKeepAliveInterval": 30, "tcpNoDelay": True}}
+            "streamSettings": {"sockopt": {"mark": 255, "tcpKeepAliveInterval": 30, "tcpNoDelay": True}}
         }
         block_outbound = {"protocol": "blackhole", "tag": "block"}
         dns_outbound = build_dns_outbound()
@@ -451,7 +446,7 @@ def main():
         print("  → Обработка VLESS формата", file=sys.stderr)
         
         all_obs = load_vless_outbounds()
-        cfg = base_config()
+        cfg = base_config(args.listen_ip)
         
         if has_hole(all_obs):
             cfg["outbounds"] = [
@@ -486,7 +481,7 @@ def main():
                 
                 direct_outbound = {
                     "protocol": "freedom", "tag": "direct",
-                    "streamSettings": {"sockopt": {"mark": 0, "tcpKeepAliveInterval": 30, "tcpNoDelay": True}}
+                    "streamSettings": {"sockopt": {"mark": 255, "tcpKeepAliveInterval": 30, "tcpNoDelay": True}}
                 }
                 
                 cfg["outbounds"] = [chosen, direct_outbound, {"protocol": "blackhole", "tag": "block"}, build_dns_outbound()]

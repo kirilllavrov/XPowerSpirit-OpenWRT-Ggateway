@@ -16,16 +16,22 @@ if [ ! -d "/sys/class/leds/white:wan-online" ]; then
 fi
 
 # Удаляем только старые Xray-конфигурации LED (остальные LED системы не трогаем)
-for idx in $(seq 0 9); do
-    name="$(uci -q get system.@led[$idx].name 2>/dev/null || true)"
-    case "$name" in
-        Xray_Status|xray_traffic|wan_online|Xray_Traffic|Internet_Status)
-            uci delete system.@led[$idx] 2>/dev/null && {
-                # После удаления индексы сдвигаются — начинаем заново
-                idx=0
-            }
-            ;;
-    esac
+# После удаления индексы сдвигаются, поэтому удаляем по индексу 0, пока есть совпадения
+LED_NAMES="Xray_Status xray_traffic wan_online Xray_Traffic Internet_Status"
+for led_name in $LED_NAMES; do
+    while true; do
+        idx=0
+        found=false
+        while [ $idx -lt 10 ]; do
+            name="$(uci -q get system.@led[$idx].name 2>/dev/null || true)"
+            if [ "$name" = "$led_name" ]; then
+                uci delete system.@led[$idx] 2>/dev/null && found=true
+                break
+            fi
+            idx=$((idx + 1))
+        done
+        [ "$found" = false ] && break
+    done
 done 2>/dev/null || true
 uci commit system
 /etc/init.d/led restart 2>/dev/null || service led restart 2>/dev/null || true
