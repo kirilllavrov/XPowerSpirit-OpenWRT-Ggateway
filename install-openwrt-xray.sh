@@ -358,23 +358,28 @@ start_service() {
     sleep 1
     if ! pidof xray >/dev/null; then
         logger -t xray "Xray failed to start — disabling TProxy"
-        # Удаляем файл с правилами
-        rm -f /etc/nftables.d/99-xray-tproxy.nft
-        service firewall restart
-        while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
-        ip route flush table 100 2>/dev/null
+        # Очищаем nftables и policy routing
+        cleanup_tproxy
         return 1
     fi
 
     logger -t xray "Xray started successfully"
 }
 
-stop_service() {
-    # Удаляем файл с правилами
-    rm -f /etc/nftables.d/99-xray-tproxy.nft
-    service firewall restart
+# Очистка правил TProxy
+cleanup_tproxy() {
+    # Удаляем цепочку xray_tproxy (все правила внутри удалятся)
+    nft delete chain inet fw4 xray_tproxy 2>/dev/null || true
+    # Удаляем правило jump из prerouting
+    nft delete rule inet fw4 prerouting jump xray_tproxy 2>/dev/null || true
+    # Очищаем policy routing
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null
+    logger -t xray "TProxy rules cleaned"
+}
+
+stop_service() {
+    cleanup_tproxy
     logger -t xray "Stopped, network cleaned"
 }
 
