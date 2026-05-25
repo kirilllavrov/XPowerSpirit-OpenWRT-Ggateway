@@ -62,7 +62,7 @@ if [ -z "$SUB_URL" ]; then
 fi
 
 # Создаём необходимые директории
-mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
+mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR" "/etc/nftables.d"
 
 # =============================================
 #   ЕДИНАЯ ФУНКЦИЯ ЗАГРУЗКИ
@@ -323,9 +323,9 @@ start_service() {
     logger -t xray "Time sync failed, continuing anyway"
     sleep 1
 
-    # Применяем базовые nftables правила
+    # Применяем nftables правила через fw4 интеграцию
     if [ -x /usr/share/xray/update-nft.sh ]; then
-        /usr/share/xray/update-nft.sh &
+        /usr/share/xray/update-nft.sh
     fi
 
     # Проверяем наличие геофайлов
@@ -353,7 +353,9 @@ start_service() {
     sleep 1
     if ! pidof xray >/dev/null; then
         logger -t xray "Xray failed to start — disabling TProxy"
-        nft delete table inet xray 2>/dev/null
+        # Удаляем файл с правилами
+        rm -f /etc/nftables.d/99-xray-tproxy.nft
+        service firewall restart
         while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
         ip route flush table 100 2>/dev/null
         return 1
@@ -363,7 +365,9 @@ start_service() {
 }
 
 stop_service() {
-    nft delete table inet xray 2>/dev/null
+    # Удаляем файл с правилами
+    rm -f /etc/nftables.d/99-xray-tproxy.nft
+    service firewall restart
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null
     logger -t xray "Stopped, network cleaned"
@@ -607,6 +611,11 @@ service odhcpd stop 2>/dev/null || true
 service odhcpd disable 2>/dev/null || true
 service dnsmasq stop 2>/dev/null || true
 service dnsmasq disable 2>/dev/null || true
+
+# Применяем nftables правила
+if [ -x "$NFT_UPDATER" ]; then
+    $NFT_UPDATER
+fi
 
 sleep 2
 echo "[+] DHCP на роутере отключён"
