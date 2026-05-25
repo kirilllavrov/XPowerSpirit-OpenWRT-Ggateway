@@ -405,15 +405,13 @@ echo "[+] Routing настроен"
 echo "8. Настраиваем sysctl:"
 
 sysctl -w net.ipv4.conf.all.route_localnet=1
-sysctl -w net.ipv4.ip_forward=1
 
 cat >"/etc/sysctl.d/99-xray.conf" <<EOF
 net.ipv4.conf.all.route_localnet=1
-net.ipv4.ip_forward=1
 EOF
 sysctl -p /etc/sysctl.d/99-xray.conf >/dev/null 2>&1
 
-echo "[+] Sysctl настроен"
+echo "[+] Sysctl настроен (route_localnet=1, ip_forward не включён — он не нужен для TProxy и снижает производительность Splice)"
 
 # =============================================
 # 9. Geo + HWID + config.json (с поддержкой двух форматов)

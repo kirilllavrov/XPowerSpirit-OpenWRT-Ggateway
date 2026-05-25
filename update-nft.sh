@@ -35,32 +35,35 @@ setup_network() {
     ip rule add fwmark 1 table 100
     ip route add local 0.0.0.0/0 dev lo table 100
 
-	# Блокируем QUIC (UDP 443) до того, как пакеты попадут в TProxy
-    nft add rule inet fw4 prerouting udp dport 443 drop
-
-    # Проверяем, есть ли уже цепочка
-    if ! nft list chain inet fw4 xray_tproxy 2>/dev/null | grep -q "chain xray_tproxy"; then
+    # Проверяем, есть ли уже цепочка xray_tproxy
+    if ! nft list chain inet fw4 xray_tproxy >/dev/null 2>&1; then
         nft add chain inet fw4 xray_tproxy
         nft add rule inet fw4 prerouting jump xray_tproxy
     else
         nft flush chain inet fw4 xray_tproxy
     fi
 
-    # Добавляем правила (с использованием переменной LAN_IP)
+    # Правила внутри цепочки xray_tproxy (порядок важен!)
+    # 1) Пропускаем приватные и служебные сети
     nft add rule inet fw4 xray_tproxy ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return
-    nft add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0 } return
+    # 2) Пропускаем известные DNS-сервера
+    nft add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
+    # 3) Пропускаем локальный web-интерфейс роутера
     nft add rule inet fw4 xray_tproxy ip daddr $LAN_IP tcp dport 22 return
     nft add rule inet fw4 xray_tproxy ip daddr $LAN_IP tcp dport 80 return
     nft add rule inet fw4 xray_tproxy ip daddr $LAN_IP tcp dport 443 return
-    nft add rule inet fw4 xray_tproxy meta mark 0x1 return
-
+    # 4) Пропускаем уже обработанный трафик (mark 0x1 — проксирован, mark 2 — трафик самого Xray)
+    nft add rule inet fw4 xray_tproxy meta mark { 0x1, 0x2 } return
+    # 5) Пропускаем IP-адреса прокси-серверов (чтобы не зациклить трафик Xray)
     for ip in $(extract_server_ips); do
         if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             nft add rule inet fw4 xray_tproxy ip daddr $ip return
             logger -t update-nft "Bypass IP added: $ip"
         fi
     done
-
+    # 6) Блокируем QUIC (UDP 443) — принуждаем клиентов к HTTP/2
+    nft add rule inet fw4 xray_tproxy udp dport 443 drop
+    # 7) TProxy: перенаправляем TCP/UDP в Xray
     nft add rule inet fw4 xray_tproxy iifname "br-lan" meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
     nft add rule inet fw4 xray_tproxy iifname "br-lan" meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
 

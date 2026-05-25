@@ -11,6 +11,8 @@ import syslog
 # -----------------------------
 # ЛОГИРОВАНИЕ ОШИБОК
 # -----------------------------
+syslog.openlog("xray-sub-parser")
+
 def log_error(msg: str) -> None:
     """Отправляет сообщение об ошибке в syslog и в stderr"""
     syslog.syslog(syslog.LOG_ERR, f"xray-parser: {msg}")
