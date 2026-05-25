@@ -1,5 +1,5 @@
 #!/bin/sh
-# OpenWrt — обновление nftables правил для Xray TProxy
+# OpenWrt — обновление nftables правил для Xray TProxy (Cudy Gateway)
 
 CONF="/etc/xray/config.json"
 LAN_IF="br-lan"
@@ -109,7 +109,7 @@ table inet xray {
         # 2. Bypass DoH/DNS-серверов (чтобы Xray мог отправлять DoH-запросы)
         ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0 } return;
 
-        # 3. Bypass управления Cudy (SSH, WebUI)
+        # 3. Bypass управления Cudy (SSH, WebUI) — чтобы администратор имел доступ
         ip daddr 192.168.1.120 tcp dport { 22, 80, 443 } return;
 
 NFT
@@ -131,8 +131,11 @@ NFT
         # 5. Bypass уже помеченного трафика (от самого Xray)
         meta mark 0x1 return;
 
-		# 6. Блокируем UDP 443 (QUIC)
-		udp dport 443 drop;
+        # MSS clamping (исправление MTU для PPPoE и TProxy)
+        tcp flags syn tcp option maxseg size set rt mtu;
+
+        # 6. Блокируем UDP 443 (QUIC) — принудительно переключаем клиентов на TCP
+        udp dport 443 drop;
 
         # 7. DNS — не трогаем (Xray сам слушает 53 порт)
         udp dport 53 return;
