@@ -1,6 +1,5 @@
 #!/bin/sh
-# OpenWrt — создание nftables правил для Xray TProxy через fw4 интеграцию
-# Для OpenWrt 22.03+ с fw4
+# OpenWrt — обновление nftables правил для Xray TProxy через fw4 интеграцию
 
 CONF="/etc/xray/config.json"
 
@@ -33,57 +32,48 @@ setup_network() {
     ip rule add fwmark 1 table 100
     ip route add local 0.0.0.0/0 dev lo table 100
 
-    # Создаём файл для интеграции с fw4
-    cat > /etc/nftables.d/99-xray-tproxy.nft << 'NFTEOF'
-# Xray TProxy integration with fw4
-# Этот файл автоматически включается fw4
+    # Удаляем старую цепочку, если есть
+    nft list chain inet fw4 xray_tproxy 2>/dev/null && nft delete chain inet fw4 xray_tproxy 2>/dev/null
 
-table inet xray {
-    chain xray_tproxy {
-        type filter hook prerouting priority mangle + 10; policy accept;
-        
-        # 1. Bypass локальных и служебных подсетей
-        ip daddr {
-            127.0.0.0/8,
-            10.0.0.0/8,
-            172.16.0.0/12,
-            192.168.0.0/16,
-            169.254.0.0/16
-        } return;
-        
-        # 2. Bypass DoH/DNS-серверов
-        ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0 } return;
-        
-        # 3. Bypass управления Cudy (SSH, WebUI)
-        ip daddr 192.168.1.120 tcp dport 22 return;
-        ip daddr 192.168.1.120 tcp dport 80 return;
-        ip daddr 192.168.1.120 tcp dport 443 return;
+    # Создаём временный файл с правилами
+    cat > /tmp/xray_rules.nft << 'NFTEOF'
+# Xray TProxy integration with fw4
+add chain inet fw4 xray_tproxy
+add rule inet fw4 xray_tproxy ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return
+add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0 } return
+add rule inet fw4 xray_tproxy ip daddr 192.168.1.120 tcp dport 22 return
+add rule inet fw4 xray_tproxy ip daddr 192.168.1.120 tcp dport 80 return
+add rule inet fw4 xray_tproxy ip daddr 192.168.1.120 tcp dport 443 return
+add rule inet fw4 xray_tproxy meta mark 0x1 return
 NFTEOF
 
     # Добавляем bypass для прокси-серверов
     for ip in $(extract_server_ips); do
         if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "        ip daddr $ip return;" >> /etc/nftables.d/99-xray-tproxy.nft
+            echo "add rule inet fw4 xray_tproxy ip daddr $ip return" >> /tmp/xray_rules.nft
             logger -t update-nft "Bypass IP added: $ip"
         fi
     done
 
-    cat >> /etc/nftables.d/99-xray-tproxy.nft << 'NFTEOF'
-        
-        # 4. Bypass уже помеченного трафика (от самого Xray)
-        meta mark 0x1 return;
-        
-        # 5. TProxy для TCP и UDP с LAN
-        iifname "br-lan" meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 1 accept;
-        iifname "br-lan" meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 1 accept;
-    }
-}
+    cat >> /tmp/xray_rules.nft << 'NFTEOF'
+add rule inet fw4 xray_tproxy iifname "br-lan" meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 1 accept
+add rule inet fw4 xray_tproxy iifname "br-lan" meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 1 accept
+add rule inet fw4 prerouting jump xray_tproxy
 NFTEOF
 
-    # Перезагружаем firewall для применения правил
-    service firewall restart
-    
-    logger -t update-nft "Xray TProxy rules applied via fw4 integration"
+    # Применяем правила
+    nft -f /tmp/xray_rules.nft
+
+    if [ $? -eq 0 ]; then
+        logger -t update-nft "Xray TProxy rules applied successfully"
+        rm -f /tmp/xray_rules.nft
+        # Сохраняем правила для перезагрузки
+        nft list chain inet fw4 xray_tproxy > /etc/nftables.d/99-xray-tproxy.nft 2>/dev/null || true
+    else
+        logger -t update-nft "Failed to apply Xray TProxy rules"
+        rm -f /tmp/xray_rules.nft
+        return 1
+    fi
 }
 
 setup_network
