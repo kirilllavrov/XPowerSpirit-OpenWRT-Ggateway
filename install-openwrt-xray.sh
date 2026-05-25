@@ -382,10 +382,6 @@ stop_service() {
     cleanup_tproxy
     logger -t xray "Stopped, network cleaned"
 }
-
-service_triggers() {
-    procd_add_reload_trigger "xray"
-}
 XRAYEOF
 
 chmod +x /etc/init.d/xray
@@ -410,13 +406,15 @@ echo "[+] Routing настроен"
 echo "8. Настраиваем sysctl:"
 
 sysctl -w net.ipv4.conf.all.route_localnet=1
+sysctl -w net.ipv4.ip_forward=1
 
 cat >"/etc/sysctl.d/99-xray.conf" <<EOF
 net.ipv4.conf.all.route_localnet=1
+net.ipv4.ip_forward=1
 EOF
 sysctl -p /etc/sysctl.d/99-xray.conf >/dev/null 2>&1
 
-echo "[+] Sysctl настроен (route_localnet=1, ip_forward не включён — он не нужен для TProxy и снижает производительность Splice)"
+echo "[+] Sysctl настроен (route_localnet=1, ip_forward=1 — прозрачный шлюз)"
 
 # =============================================
 # 9. Geo + HWID + config.json (с поддержкой двух форматов)
