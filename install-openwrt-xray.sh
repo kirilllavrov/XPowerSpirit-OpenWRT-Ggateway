@@ -68,25 +68,15 @@ mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
 #   ЕДИНАЯ ФУНКЦИЯ ЗАГРУЗКИ
 # =============================================
 
-# Универсальная загрузка файла (с поддержкой кастомных заголовков)
-# Использует curl с фиксированным User-Agent; кастомные заголовки передаются через доп. аргументы
+# Универсальная загрузка файла (только url + путь)
 download_file() {
     url="$1"
     dst="$2"
-    shift 2
     max_retries=3
     retry=1
 
     while [ "$retry" -le "$max_retries" ]; do
-        # Собираем аргументы curl без eval: передаём заголовки в подстановке команд
-        # Каждый аргумент в отдельной строке для корректного word splitting
-        header_args=""
-        for h in "$@"; do
-            header_args="$header_args -H $h"
-        done
-
-        # shellcheck disable=SC2086
-        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 $header_args -o "$dst" "$url"
+        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 -o "$dst" "$url"
         rc=$?
 
         if [ "$rc" -eq 0 ] && [ -s "$dst" ]; then
@@ -469,8 +459,24 @@ echo "  ✓ HWID сохранён: $HWID"
 
 echo "  → Генерируем config.json из подписки (User-Agent: $SUB_USER_AGENT)..."
 
-# Скачиваем подписку с заголовками
-if download_file "$SUB_URL" "/tmp/sub_raw.txt" "User-Agent: $SUB_USER_AGENT" "x-hwid: $HWID"; then
+# Скачиваем подписку с заголовками (curl напрямую, чтобы избежать word splitting в download_file)
+SUB_TMP="/tmp/sub_raw.txt"
+SUB_RETRY=3
+SUB_OK=0
+while [ "$SUB_RETRY" -gt 0 ] && [ "$SUB_OK" -eq 0 ]; do
+    curl -s -L --max-time 15 \
+        -H "User-Agent: $SUB_USER_AGENT" \
+        -H "x-hwid: $HWID" \
+        -o "$SUB_TMP" "$SUB_URL"
+    if [ $? -eq 0 ] && [ -s "$SUB_TMP" ] && ! head -n 1 "$SUB_TMP" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
+        SUB_OK=1
+    else
+        rm -f "$SUB_TMP"
+        SUB_RETRY=$((SUB_RETRY - 1))
+        [ "$SUB_RETRY" -gt 0 ] && sleep 2
+    fi
+done
+if [ "$SUB_OK" -eq 1 ]; then
     
     # Проверяем, что скачалось не HTML
     if head -n 1 "/tmp/sub_raw.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
