@@ -368,10 +368,12 @@ start_service() {
 
 # Очистка правил TProxy
 cleanup_tproxy() {
-    # Удаляем цепочку xray_tproxy (все правила внутри удалятся)
-    nft delete chain inet fw4 xray_tproxy 2>/dev/null || true
-    # Удаляем правило jump из prerouting
+    # Удаляем файл, чтобы fw4 не подхватил мусор при reload
+    rm -f /etc/nftables.d/99-xray-tproxy.nft
+    # Удаляем jump-правило из prerouting
     nft delete rule inet fw4 prerouting jump xray_tproxy 2>/dev/null || true
+    # Удаляем цепочку (все правила внутри удалятся)
+    nft delete chain inet fw4 xray_tproxy 2>/dev/null || true
     # Очищаем policy routing
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null
