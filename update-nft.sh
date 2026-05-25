@@ -35,6 +35,9 @@ setup_network() {
     ip rule add fwmark 1 table 100
     ip route add local 0.0.0.0/0 dev lo table 100
 
+	# Блокируем QUIC (UDP 443) до того, как пакеты попадут в TProxy
+    nft add rule inet fw4 prerouting udp dport 443 drop
+
     # Проверяем, есть ли уже цепочка
     if ! nft list chain inet fw4 xray_tproxy 2>/dev/null | grep -q "chain xray_tproxy"; then
         nft add chain inet fw4 xray_tproxy
