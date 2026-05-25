@@ -104,8 +104,8 @@ uci set system.@system[0].zonename='Europe/Moscow'
 uci set system.@system[0].timezone='MSK-3'
 uci commit system
 
-ntpd -q -p 77.88.8.8 2>/dev/null ||
-	ntpd -q -p 1.1.1.1 2>/dev/null ||
+ntpd -q -p ru.pool.ntp.org 2>/dev/null ||
+	ntpd -q -p time.google.com 2>/dev/null ||
 	echo " [!] Синхронизация времени не удалась, продолжаем..."
 
 echo "[+] Timezone установлен в Europe/Moscow, время синхронизировано"
