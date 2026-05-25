@@ -62,7 +62,7 @@ if [ -z "$SUB_URL" ]; then
 fi
 
 # Создаём необходимые директории
-mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR" "/etc/nftables.d"
+mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
 
 # =============================================
 #   ЕДИНАЯ ФУНКЦИЯ ЗАГРУЗКИ
@@ -124,13 +124,8 @@ echo "$SUB_URL" >"$SUB_FILE"
 chmod 600 "$SUB_FILE"
 echo "[+] Подписка сохранена: $SUB_URL"
 
-# сохраняем User-Agent для использования в других скриптах
 echo "$SUB_USER_AGENT" > "$CONFIG_DIR/sub_user_agent"
 echo "[+] User-Agent сохранён: $SUB_USER_AGENT"
-
-# Сохраняем LAN_IP для использования в update-nft.sh
-echo "$LAN_IP" > "$CONFIG_DIR/lan_ip"
-echo "[+] LAN IP сохранён: $LAN_IP"
 
 if [ -n "$REMARKS_FILTER" ]; then
     echo "$REMARKS_FILTER" > "$CONFIG_DIR/sub_remarks"
@@ -328,9 +323,9 @@ start_service() {
     logger -t xray "Time sync failed, continuing anyway"
     sleep 1
 
-    # Применяем nftables правила через fw4 интеграцию
+    # Применяем базовые nftables правила
     if [ -x /usr/share/xray/update-nft.sh ]; then
-        /usr/share/xray/update-nft.sh
+        /usr/share/xray/update-nft.sh &
     fi
 
     # Проверяем наличие геофайлов
@@ -358,31 +353,24 @@ start_service() {
     sleep 1
     if ! pidof xray >/dev/null; then
         logger -t xray "Xray failed to start — disabling TProxy"
-        # Очищаем nftables и policy routing
-        cleanup_tproxy
+        nft delete table inet xray 2>/dev/null
+        while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
+        ip route flush table 100 2>/dev/null
         return 1
     fi
 
     logger -t xray "Xray started successfully"
 }
 
-# Очистка правил TProxy
-cleanup_tproxy() {
-    # Удаляем файл, чтобы fw4 не подхватил мусор при reload
-    rm -f /etc/nftables.d/99-xray-tproxy.nft
-    # Удаляем jump-правило из prerouting
-    nft delete rule inet fw4 prerouting jump xray_tproxy 2>/dev/null || true
-    # Удаляем цепочку (все правила внутри удалятся)
-    nft delete chain inet fw4 xray_tproxy 2>/dev/null || true
-    # Очищаем policy routing
+stop_service() {
+    nft delete table inet xray 2>/dev/null
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null
-    logger -t xray "TProxy rules cleaned"
+    logger -t xray "Stopped, network cleaned"
 }
 
-stop_service() {
-    cleanup_tproxy
-    logger -t xray "Stopped, network cleaned"
+service_triggers() {
+    procd_add_reload_trigger "xray"
 }
 XRAYEOF
 
@@ -416,7 +404,7 @@ net.ipv4.ip_forward=1
 EOF
 sysctl -p /etc/sysctl.d/99-xray.conf >/dev/null 2>&1
 
-echo "[+] Sysctl настроен (route_localnet=1, ip_forward=1 — прозрачный шлюз)"
+echo "[+] Sysctl настроен"
 
 # =============================================
 # 9. Geo + HWID + config.json (с поддержкой двух форматов)
@@ -619,11 +607,6 @@ service odhcpd stop 2>/dev/null || true
 service odhcpd disable 2>/dev/null || true
 service dnsmasq stop 2>/dev/null || true
 service dnsmasq disable 2>/dev/null || true
-
-# Применяем nftables правила
-if [ -x "$NFT_UPDATER" ]; then
-    $NFT_UPDATER
-fi
 
 sleep 2
 echo "[+] DHCP на роутере отключён"
