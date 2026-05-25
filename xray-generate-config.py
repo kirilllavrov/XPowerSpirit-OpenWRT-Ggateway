@@ -304,6 +304,7 @@ def build_direct_config() -> dict:
         "rules": [
             {"type": "field", "inboundTag": ["dns-in"], "outboundTag": "dns-out"},
             {"type": "field", "domain": ["geosite:category-ads"], "outboundTag": "block"},
+            {"type": "field", "port": "123", "network": "udp", "outboundTag": "direct"},
             {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
             {"type": "field", "domain": ["geosite:private", "geosite:category-ru"], "outboundTag": "direct"},
             {"type": "field", "network": "tcp,udp", "outboundTag": "direct"}
@@ -326,6 +327,7 @@ def build_rules(proxy_outbounds: list, direct_mode: bool = False) -> list:
     rules = [
         {"type": "field", "inboundTag": ["dns-in"], "outboundTag": "dns-out"},
         {"type": "field", "domain": ["geosite:category-ads"], "outboundTag": "block"},
+        {"type": "field", "port": "123", "network": "udp", "outboundTag": "direct"},
         {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
         {"type": "field", "domain": [
             "geosite:private", "geosite:category-browser",
