@@ -136,7 +136,6 @@ echo "3. Отключаем IPv6..."
 uci set network.lan.ipv6='0'
 uci set network.wan.ipv6='0'
 uci -q delete network.wan6
-uci commit network
 
 echo "[+] IPv6 отключён"
 
