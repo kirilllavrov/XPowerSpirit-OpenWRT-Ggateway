@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Xray Config Generator for OpenWrt TProxy (Cudy Gateway)
-Поддерживает два входных формата:
-  --format vless - из xray-sub-parser.py (VLESS URI -> outbounds)
-  --format json  - из JSON-подписки (Happ/Sing-box) с фильтрацией по remarks
+Xray Config Generator for OpenWrt TProxy
+Поддерживает три входных формата:
+  --format unified - унифицированный JSON из xray-sub-parser.py (рекомендуемый)
+  --format vless   - старый режим: VLESS outbounds из xray-sub-parser.py
+  --format json    - старый режим: сырая JSON-подписка Happ/Sing-box
 
 Специальная обработка "hole":
   Если в подписке обнаружен outbound с address="hole", генерируется DIRECT-конфиг
+  (весь трафик идёт напрямую, прокси отключены). Это сигнал об окончании срока подписки.
 
 Балансировка:
   Используется стратегия leastLoad с burstObservatory для выбора наиболее стабильного прокси.
@@ -31,38 +33,52 @@ DOMAIN_WHITELIST = [
 # ============================================
 
 def log_error(msg: str) -> None:
+    """Выводит сообщение об ошибке в stderr"""
     print(msg, file=sys.stderr)
 
 
 def normalize_tag(tag: str) -> str:
+    """Нормализует тег для использования в Xray"""
     if not tag:
         return "proxy"
     tag = tag.replace(" ", "_")
     tag = tag.replace("(", "").replace(")", "")
+    # Только буквы, цифры, дефис, подчёркивание
     tag = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_\-]", "", tag)
     return tag or "proxy"
 
 
 def normalize_outbound(ob: dict) -> dict:
-    """Дополняет outbound sockopt и отключает mux"""
+    """
+    Дополняет outbound из подписки недостающими полями.
+    Добавляет sockopt (mark, tcpNoDelay, tcpKeepAliveInterval) и отключает mux.
+    """
+    # Убеждаемся, что streamSettings существует
     if "streamSettings" not in ob:
         ob["streamSettings"] = {}
+    
+    # Добавляем sockopt с правильными параметрами
     if "sockopt" not in ob["streamSettings"]:
         ob["streamSettings"]["sockopt"] = {}
-    ob["streamSettings"]["sockopt"]["mark"] = 255
+    
+    ob["streamSettings"]["sockopt"]["mark"] = 2
     ob["streamSettings"]["sockopt"]["tcpNoDelay"] = True
     ob["streamSettings"]["sockopt"]["tcpKeepAliveInterval"] = 30
+    
+    # Отключаем mux (не нужен для TProxy)
     if "mux" not in ob:
         ob["mux"] = {}
     ob["mux"]["enabled"] = False
+    
     return ob
 
 
 # ============================================
-#   ФУНКЦИИ ДЛЯ JSON ФОРМАТА
+#   ФУНКЦИИ ДЛЯ JSON ФОРМАТА (Happ/Sing-box)
 # ============================================
 
 def load_json_subscription() -> list:
+    """Загружает JSON-подписку из stdin (формат Happ/Sing-box)"""
     try:
         data = json.load(sys.stdin)
         if isinstance(data, list):
@@ -74,6 +90,10 @@ def load_json_subscription() -> list:
 
 
 def has_hole_in_subscription(sub_data: list) -> bool:
+    """
+    Проверяет, есть ли в подписке outbound с адресом 'hole'.
+    Это сигнал об окончании срока подписки.
+    """
     for config in sub_data:
         if "outbounds" not in config:
             continue
@@ -88,6 +108,12 @@ def has_hole_in_subscription(sub_data: list) -> bool:
 
 
 def extract_outbounds_from_subscription(sub_data: list, remarks_filter: str = '') -> list:
+    """
+    Извлекает все outbounds из JSON-подписки.
+    Пропускает служебные outbounds (freedom, blackhole, dns).
+    Нормализует теги и добавляет недостающие поля.
+    Если указан remarks_filter, выбирает только профиль с этим remarks.
+    """
     all_outbounds = []
     seen_tags = set()
     found_profile = False
@@ -95,6 +121,7 @@ def extract_outbounds_from_subscription(sub_data: list, remarks_filter: str = ''
     for config in sub_data:
         config_remarks = config.get("remarks", "")
         
+        # Фильтрация по remarks
         if remarks_filter:
             if remarks_filter.lower() not in config_remarks.lower():
                 print(f"  → Пропускаем профиль: {config_remarks}", file=sys.stderr)
@@ -107,13 +134,16 @@ def extract_outbounds_from_subscription(sub_data: list, remarks_filter: str = ''
             continue
         
         for ob in config["outbounds"]:
+            # Пропускаем служебные outbounds
             protocol = ob.get("protocol", "")
             if protocol in ["freedom", "blackhole", "dns"]:
                 continue
             
+            # Нормализуем тег
             if "tag" not in ob or not ob["tag"]:
                 ob["tag"] = "proxy"
             
+            # Дедупликация тегов
             original_tag = ob["tag"]
             tag = normalize_tag(original_tag)
             counter = 2
@@ -124,7 +154,9 @@ def extract_outbounds_from_subscription(sub_data: list, remarks_filter: str = ''
             ob["tag"] = tag
             seen_tags.add(tag)
             
+            # Добавляем недостающие поля (sockopt, mux)
             ob = normalize_outbound(ob)
+            
             all_outbounds.append(ob)
             print(f"  → Outbound: {tag} ({protocol})", file=sys.stderr)
     
@@ -139,10 +171,11 @@ def extract_outbounds_from_subscription(sub_data: list, remarks_filter: str = ''
 
 
 # ============================================
-#   ФУНКЦИИ ДЛЯ VLESS ФОРМАТА
+#   ФУНКЦИИ ДЛЯ VLESS ФОРМАТА (через парсер)
 # ============================================
 
 def load_vless_outbounds() -> list:
+    """Загружает outbounds из stdin (формат от xray-sub-parser.py)"""
     try:
         data = json.load(sys.stdin)
         if isinstance(data, dict):
@@ -205,14 +238,17 @@ def choose_best_server(servers):
 
 
 def normalize_vless_outbound(ob: dict, chosen_tag: str) -> dict:
+    """Нормализует outbound из VLESS формата"""
     if "tag" not in ob:
         ob["tag"] = chosen_tag
+    
     ss = ob.setdefault("streamSettings", {})
     sockopt = ss.setdefault("sockopt", {})
-    sockopt["mark"] = 0
+    sockopt["mark"] = 2
     sockopt["tcpKeepAliveInterval"] = 30
     sockopt["tcpNoDelay"] = True
     ob.setdefault("mux", {"enabled": False})
+    
     return ob
 
 
@@ -220,19 +256,22 @@ def normalize_vless_outbound(ob: dict, chosen_tag: str) -> dict:
 #   БАЗОВАЯ КОНФИГУРАЦИЯ
 # ============================================
 
-def base_config(listen_ip: str = "0.0.0.0") -> dict:
+def base_config() -> dict:
+    """Возвращает базовую конфигурацию Xray с TProxy и DNS"""
     return {
         "log": {
-            "loglevel": "info",
+            "loglevel": "none",
             "access": "/tmp/log/xray-access.log",
             "error": "/tmp/log/xray-error.log"
         },
         "dns": {
+            "tag": "dns-inbuilt",
             "queryStrategy": "UseIPv4",
             "disableCache": False,
             "serveStale": True,
             "serveExpiredTTL": 1800,
             "disableFallback": False,
+            "disableFallbackIfMatch": True,
             "enableParallelQuery": True,
             "hosts": {
                 "common.dot.dns.yandex.net": ["77.88.8.1", "77.88.8.8"],
@@ -243,6 +282,7 @@ def base_config(listen_ip: str = "0.0.0.0") -> dict:
                 {
                     "address": "https+local://common.dot.dns.yandex.net/dns-query",
                     "domains": ["geosite:category-ru"],
+                    "expectedIPs": ["geoip:ru"],
                     "skipFallback": True
                 },
                 {
@@ -250,7 +290,7 @@ def base_config(listen_ip: str = "0.0.0.0") -> dict:
                     "skipFallback": False
                 },
                 {
-                    "address": "https+local://dns.nextdns.io/dns-query",
+                    "address": "https+local://dns.nextdns.io",
                     "skipFallback": False
                 }
             ]
@@ -262,7 +302,7 @@ def base_config(listen_ip: str = "0.0.0.0") -> dict:
                 "port": 12345,
                 "protocol": "dokodemo-door",
                 "settings": {
-                    "network": "tcp,udp",
+                    "allowedNetwork": "tcp,udp",
                     "followRedirect": True
                 },
                 "streamSettings": {
@@ -277,84 +317,219 @@ def base_config(listen_ip: str = "0.0.0.0") -> dict:
                 }
             },
             {
-                "tag": "dns-in",
-                "listen": listen_ip,
-                "port": 53,
+                "tag": "dns-local",
+                "listen": "127.0.0.1",
+                "port": 5353,
                 "protocol": "dokodemo-door",
                 "settings": {
-                    "network": "udp"
+                    "allowedNetwork": "udp"
                 }
             }
         ]
     }
 
 
-def build_direct_config(listen_ip: str = "0.0.0.0") -> dict:
-    cfg = base_config(listen_ip)
+def build_direct_config() -> dict:
+    """Создаёт DIRECT-конфиг (без прокси) для режима 'hole'"""
+    cfg = base_config()
     cfg["outbounds"] = [
-        {"protocol": "freedom", "tag": "direct"},
-        {"protocol": "blackhole", "tag": "block"},
+        {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIPv4"}},
+        {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "http"}}},
         {
             "protocol": "dns",
             "tag": "dns-out",
             "settings": {
-                "rules": [{"action": "hijack", "qtype": "1,28"}]
+                "rules": [
+                    {
+                        "action": "hijack",
+                        "qtype": "1,28"
+                    }
+                ]
             }
         }
     ]
     cfg["routing"] = {
-        "domainStrategy": "IPOnDemand",
-        "rules": build_rules([], direct_mode=True)
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "inboundTag": ["dns-local"],
+                "outboundTag": "dns-out"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "common.dot.dns.yandex.net",
+                    "cloudflare-dns.com",
+                    "dns.google",
+                    "dns.quad9.net",
+                    "doh.opendns.com",
+                    "dns.nextdns.io"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": ["geosite:category-ads"],
+                "outboundTag": "block"
+            },
+            {
+                "type": "field",
+                "ip": ["geoip:ru", "geoip:private"],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:private",
+                    "geosite:category-browser",
+                    "geosite:category-cdn-ru",
+                    "geosite:category-mobile",
+                    "geosite:category-ru"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "network": "tcp,udp",
+                "outboundTag": "direct"
+            }
+        ]
     }
     return cfg
 
 
 def build_dns_outbound() -> dict:
+    """Создаёт outbound 'dns-out' с hijack во встроенный DNS"""
     return {
         "protocol": "dns",
         "tag": "dns-out",
         "settings": {
-            "rules": [{"action": "hijack", "qtype": "1,28"}]
+            "rules": [
+                {
+                    "action": "hijack",
+                    "qtype": "1,28"
+                }
+            ]
         }
     }
 
 
 def build_rules(proxy_outbounds: list, direct_mode: bool = False) -> list:
+    """
+    Строит правила маршрутизации.
+    Если несколько прокси, использует балансировщик.
+    Если один прокси, использует прямой outboundTag.
+    """
     rules = [
-        {"type": "field", "inboundTag": ["dns-in"], "outboundTag": "dns-out"},
-        {"type": "field", "domain": ["geosite:category-ads"], "outboundTag": "block"},
-        {"type": "field", "port": "123", "network": "udp", "outboundTag": "direct"},
-        {"type": "field", "ip": ["geoip:ru", "geoip:private"], "outboundTag": "direct"},
-        {"type": "field", "domain": [
-            "geosite:private", "geosite:category-browser",
-            "geosite:category-cdn-ru", "geosite:category-mobile", "geosite:category-ru"
-        ], "outboundTag": "direct"},
+        # Клиентский DNS (от dnsmasq) → dns-out (hijack → dns-inbuilt)
+        {
+            "type": "field",
+            "inboundTag": ["dns-local"],
+            "outboundTag": "dns-out"
+        },
+        # Ловим DNS через DoH, которые прошли мимо dnsmasq (от браузера)
+        {
+            "type": "field",
+            "domain": [
+                "common.dot.dns.yandex.net",
+                "cloudflare-dns.com",
+                "dns.google",
+                "dns.quad9.net",
+                "doh.opendns.com",
+                "dns.nextdns.io"
+            ],
+            "outboundTag": "direct"
+        },
+        # Блокировка рекламы
+        {
+            "type": "field",
+            "domain": ["geosite:category-ads"],
+            "outboundTag": "block"
+        },
+        # NTP (порт 123) — напрямую
+        {
+            "type": "field",
+            "port": "123",
+            "network": "udp",
+            "outboundTag": "direct"
+        },
+        # QUIC (UDP/443) — блокируем на уровне Xray (VLESS+XTLS не поддерживает UDP)
+        {
+            "type": "field",
+            "port": "443",
+            "network": "udp",
+            "outboundTag": "block"
+        },
+        # Локальные и российские IP — напрямую
+        {
+            "type": "field",
+            "ip": ["geoip:ru", "geoip:private"],
+            "outboundTag": "direct"
+        },
+        # Локальные и российские домены — напрямую
+        {
+            "type": "field",
+            "domain": [
+                "geosite:private",
+                "geosite:category-browser",
+                "geosite:category-cdn-ru",
+                "geosite:category-mobile",
+                "geosite:category-ru"
+            ],
+            "outboundTag": "direct"
+        },
     ]
     
     if not direct_mode and proxy_outbounds:
         target = "balancer" if len(proxy_outbounds) > 1 else proxy_outbounds[0]["tag"]
+        
+        # Стриминг и игры — через прокси
         rules.append({
             "type": "field",
             "domain": ["geosite:category-streaming", "geosite:category-games"],
             "balancerTag" if len(proxy_outbounds) > 1 else "outboundTag": target
         })
+        
+        # Весь остальной трафик
         rules.append({
             "type": "field",
             "network": "tcp,udp",
             "balancerTag" if len(proxy_outbounds) > 1 else "outboundTag": target
         })
     else:
-        rules.append({"type": "field", "network": "tcp,udp", "outboundTag": "direct"})
+        rules.append({
+            "type": "field",
+            "network": "tcp,udp",
+            "outboundTag": "direct"
+        })
     
     return rules
 
 
 def build_balancer(proxy_outbounds: list) -> dict:
-    """Создаёт конфигурацию балансировщика для нескольких прокси (leastLoad)"""
+    """
+    Создаёт конфигурацию балансировщика для нескольких прокси (leastLoad).
+    
+    leastLoad выбирает наиболее стабильные серверы на основе данных burstObservatory:
+      - expected=3: трафик распределяется между тремя лучшими серверами (отказоустойчивость)
+      - maxRTT=600ms: серверы с пингом >600ms исключаются (даже если формально живы)
+      - baselines=[200ms]: серверы с разбросом задержки >200ms исключаются (джиттер)
+    
+    Если все серверы не проходят — fallback на direct.
+    """
+    selector = [ob["tag"] for ob in proxy_outbounds]
     return {
         "tag": "balancer",
-        "selector": [ob["tag"] for ob in proxy_outbounds],
-        "strategy": {"type": "leastLoad"},
+        "selector": selector,
+        "strategy": {
+            "type": "leastLoad",
+            "settings": {
+                "expected": 2,
+                "maxRTT": "800ms",
+                "baselines": ["200ms"]
+            }
+        },
         "fallbackTag": "direct"
     }
 
@@ -364,9 +539,10 @@ def build_burst_observatory(proxy_outbounds: list) -> dict:
     Создаёт конфигурацию burstObservatory для мониторинга прокси.
     Используется со стратегией leastLoad.
     """
+    subject_selector = [ob["tag"] for ob in proxy_outbounds]
     return {
         "burstObservatory": {
-            "subjectSelector": [ob["tag"] for ob in proxy_outbounds],
+            "subjectSelector": subject_selector,
             "pingConfig": {
                 "destination": "https://www.google.com/generate_204",
                 "interval": "1m",
@@ -383,21 +559,93 @@ def build_burst_observatory(proxy_outbounds: list) -> dict:
 # ============================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Xray config generator for OpenWrt TProxy (Cudy Gateway)')
+    parser = argparse.ArgumentParser(description='Xray config generator for OpenWrt TProxy')
     parser.add_argument('--output', required=True, help='Output config file')
-    parser.add_argument('--format', choices=['json', 'vless'], default='vless',
-                        help='Input format: json (Happ/Sing-box) or vless (parsed outbounds)')
-    parser.add_argument('--remarks', default='',
+    parser.add_argument('--format', choices=['json', 'vless', 'unified'], default='vless',
+                        help='Input format: unified (from xray-sub-parser --ua), '
+                             'json (raw Happ/Sing-box), vless (parsed VLESS outbounds)')
+    parser.add_argument('--remarks', default='', 
                         help='Filter outbounds by remarks (substring, case-insensitive). Only for JSON format')
-    parser.add_argument('--listen-ip', default='0.0.0.0',
-                        help='Listen IP for DNS inbound (default: 0.0.0.0)')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     
-    if args.format == 'json':
+    if args.format == 'unified':
+        # ========================================
+        # УНИФИЦИРОВАННЫЙ формат (из xray-sub-parser --ua)
+        # На входе: {"hole": bool, "outbounds": [...]}
+        # ========================================
+        print("  → Обработка унифицированной подписки", file=sys.stderr)
+        
+        try:
+            data = json.load(sys.stdin)
+        except Exception as e:
+            log_error(f"Failed to parse unified input: {e}")
+            sys.exit(1)
+        
+        hole = data.get("hole", False)
+        raw_outbounds = data.get("outbounds", [])
+        
+        if hole:
+            print("  [!] Обнаружен сервер 'hole' (срок подписки истёк).", file=sys.stderr)
+            print("  [!] Включаем DIRECT-режим (весь трафик напрямую).", file=sys.stderr)
+            cfg = build_direct_config()
+            with open(args.output, "w") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+            print(f"  ✓ DIRECT-конфиг сохранён: {args.output}", file=sys.stderr)
+            return
+        
+        if not raw_outbounds:
+            log_error("No outbounds in unified input — switching to DIRECT")
+            cfg = build_direct_config()
+            with open(args.output, "w") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+            print(f"  ✓ DIRECT-конфиг сохранён (нет серверов): {args.output}", file=sys.stderr)
+            return
+        
+        # Нормализуем все outbounds (sockopt, mux — зона ответственности генератора)
+        proxy_outbounds = [normalize_outbound(ob) for ob in raw_outbounds]
+        
+        cfg = base_config()
+        
+        direct_outbound = {
+            "protocol": "freedom",
+            "tag": "direct",
+            "settings": {"domainStrategy": "UseIPv4"},
+            "streamSettings": {"sockopt": {"mark": 2, "tcpKeepAliveInterval": 30}}
+        }
+        block_outbound = {
+            "protocol": "blackhole",
+            "tag": "block",
+            "settings": {"response": {"type": "http"}}
+        }
+        
+        cfg["outbounds"] = proxy_outbounds + [direct_outbound, block_outbound, build_dns_outbound()]
+        
+        if len(proxy_outbounds) > 1:
+            cfg.update(build_burst_observatory(proxy_outbounds))
+        
+        routing = {"domainStrategy": "IPIfNonMatch", "rules": build_rules(proxy_outbounds)}
+        
+        if len(proxy_outbounds) > 1:
+            routing["balancers"] = [build_balancer(proxy_outbounds)]
+        
+        cfg["routing"] = routing
+        
+        print(f"  ✓ Сгенерировано {len(proxy_outbounds)} прокси", file=sys.stderr)
+        if len(proxy_outbounds) > 1:
+            print(f"  ✓ Балансировщик: {len(proxy_outbounds)} серверов (leastLoad)", file=sys.stderr)
+        
+        with open(args.output, "w") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        print(f"  ✓ Конфиг сохранён: {args.output}", file=sys.stderr)
+    
+    elif args.format == 'json':
+        # ========================================
+        # JSON формат (Happ/Sing-box подписка)
+        # ========================================
         print("  → Обработка JSON подписки", file=sys.stderr)
         
         subscription = load_json_subscription()
@@ -405,27 +653,49 @@ def main():
             log_error("Empty or invalid JSON subscription")
             sys.exit(1)
         
+        # ПРОВЕРКА НА "hole" (окончание срока подписки)
         if has_hole_in_subscription(subscription):
             print("  [!] Обнаружен сервер 'hole' (срок подписки истёк).", file=sys.stderr)
             print("  [!] Включаем DIRECT-режим (весь трафик напрямую).", file=sys.stderr)
-            cfg = build_direct_config(args.listen_ip)
+            cfg = build_direct_config()
             with open(args.output, "w") as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
             print(f"  ✓ DIRECT-конфиг сохранён: {args.output}", file=sys.stderr)
             return
         
+        # Если "hole" нет, продолжаем нормальную обработку
         proxy_outbounds = extract_outbounds_from_subscription(subscription, args.remarks)
+        
         if not proxy_outbounds:
             log_error("No valid outbounds found in JSON subscription")
             sys.exit(1)
         
-        cfg = base_config(args.listen_ip)
+        cfg = base_config()
         
+        # Кастомные outbounds
         direct_outbound = {
-            "protocol": "freedom", "tag": "direct",
-            "streamSettings": {"sockopt": {"mark": 255, "tcpKeepAliveInterval": 30, "tcpNoDelay": True}}
+            "protocol": "freedom",
+            "tag": "direct",
+            "settings": {
+                "domainStrategy": "UseIPv4"
+            },
+            "streamSettings": {
+                "sockopt": {
+                    "mark": 2,
+                    "tcpKeepAliveInterval": 30
+                }
+            }
         }
-        block_outbound = {"protocol": "blackhole", "tag": "block"}
+        
+        block_outbound = {
+            "protocol": "blackhole",
+            "tag": "block",
+            "settings": {
+                "response": {
+                    "type": "http"
+                }
+            }
+        }
         dns_outbound = build_dns_outbound()
         
         cfg["outbounds"] = proxy_outbounds + [direct_outbound, block_outbound, dns_outbound]
@@ -433,9 +703,11 @@ def main():
         # Используем burstObservatory (для стратегии leastLoad)
         cfg.update(build_burst_observatory(proxy_outbounds))
         
-        routing = {"domainStrategy": "IPOnDemand", "rules": build_rules(proxy_outbounds)}
+        routing = {"domainStrategy": "IPIfNonMatch", "rules": build_rules(proxy_outbounds)}
+        
         if len(proxy_outbounds) > 1:
             routing["balancers"] = [build_balancer(proxy_outbounds)]
+        
         cfg["routing"] = routing
         
         print(f"  ✓ Сгенерировано {len(proxy_outbounds)} прокси", file=sys.stderr)
@@ -443,57 +715,89 @@ def main():
             print(f"  ✓ Балансировщик: {len(proxy_outbounds)} серверов (leastLoad)", file=sys.stderr)
         
     else:
+        # ========================================
+        # VLESS формат (через xray-sub-parser.py)
+        # ========================================
         print("  → Обработка VLESS формата", file=sys.stderr)
         
         all_obs = load_vless_outbounds()
-        cfg = base_config(args.listen_ip)
+        cfg = base_config()
         
         if has_hole(all_obs):
+            # DIRECT режим (hole найден)
             cfg["outbounds"] = [
-                {"protocol": "freedom", "tag": "direct"},
-                {"protocol": "blackhole", "tag": "block"},
+                {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIPv4"}},
+                {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "http"}}},
                 build_dns_outbound()
             ]
             cfg["routing"] = {
-                "domainStrategy": "IPOnDemand",
+                "domainStrategy": "IPIfNonMatch",
                 "rules": build_rules([], direct_mode=True)
             }
             print("[!] Найден сервер 'hole'. Включён DIRECT-конфиг.", file=sys.stderr)
         else:
             chosen = choose_best_server(all_obs)
+            
             if chosen is None:
+                # Нет доступных серверов
                 cfg["outbounds"] = [
-                    {"protocol": "freedom", "tag": "direct"},
-                    {"protocol": "blackhole", "tag": "block"},
+                    {"protocol": "freedom", "tag": "direct", "settings": {"domainStrategy": "UseIPv4"}},
+                    {"protocol": "blackhole", "tag": "block", "settings": {"response": {"type": "http"}}},
                     build_dns_outbound()
                 ]
                 cfg["routing"] = {
-                    "domainStrategy": "IPOnDemand",
+                    "domainStrategy": "IPIfNonMatch",
                     "rules": build_rules([], direct_mode=True)
                 }
-                print("[!] Нет доступных серверов. Создан DIRECT-конфиг.", file=sys.stderr)
+                print("[!] Нет доступных серверов (только заглушки). Создан DIRECT-конфиг.", file=sys.stderr)
             else:
+                # Выбран один сервер
                 chosen_tag = chosen.get("tag") or "proxy"
                 chosen_tag = re.sub(r'[^\w\-]', '_', chosen_tag)[:64] or "proxy"
                 if "tag" not in chosen:
                     chosen["tag"] = chosen_tag
+                
                 chosen = normalize_vless_outbound(chosen, chosen_tag)
                 
                 direct_outbound = {
-                    "protocol": "freedom", "tag": "direct",
-                    "streamSettings": {"sockopt": {"mark": 255, "tcpKeepAliveInterval": 30, "tcpNoDelay": True}}
+                    "protocol": "freedom",
+                    "tag": "direct",
+                    "settings": {
+                        "domainStrategy": "UseIPv4"
+                    },
+                    "streamSettings": {
+                        "sockopt": {
+                            "mark": 2,
+                            "tcpKeepAliveInterval": 30
+                        }
+                    }
                 }
                 
-                cfg["outbounds"] = [chosen, direct_outbound, {"protocol": "blackhole", "tag": "block"}, build_dns_outbound()]
+                cfg["outbounds"] = [
+                    chosen,
+                    direct_outbound,
+                    {
+                        "protocol": "blackhole",
+                        "tag": "block",
+                        "settings": {
+                            "response": {
+                                "type": "http"
+                            }
+                        }
+                    },
+                    build_dns_outbound()
+                ]
                 cfg["routing"] = {
-                    "domainStrategy": "IPOnDemand",
+                    "domainStrategy": "IPIfNonMatch",
                     "rules": build_rules([chosen])
                 }
                 print(f"  ✓ Выбран сервер: {chosen_tag}", file=sys.stderr)
     
+    # Сохраняем результат (JSON hole-путь уже вернулся раньше через return)
     with open(args.output, "w") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
-    print(f"  ✓ Конфиг сохранён: {args.output}", file=sys.stderr)
+
+    print(f"  ✓ Конфиг сохранен: {args.output}", file=sys.stderr)
 
 
 if __name__ == "__main__":

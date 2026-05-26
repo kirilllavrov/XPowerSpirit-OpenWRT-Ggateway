@@ -23,21 +23,15 @@ die() {
     exit 1
 }
 
-# Единая функция загрузки
-#   download_file "URL" "DEST" ["HEADER1" "HEADER2" "HEADER3"]
-download_file() {
+# Единая функция загрузки (curl)
+fetch_url() {
     local url="$1"
     local dst="$2"
-    shift 2
     local max_retries=2
     local retry=1
 
     while [ $retry -le $max_retries ]; do
-        curl -s -L -H "User-Agent: $SUB_USER_AGENT" --max-time 15 \
-            ${1:+-H "$1"} \
-            ${2:+-H "$2"} \
-            ${3:+-H "$3"} \
-            -o "$dst" "$url"
+        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 -o "$dst" "$url"
         local rc=$?
 
         if [ $rc -eq 0 ] && [ -s "$dst" ]; then
@@ -138,14 +132,6 @@ if [ -f "$SUB_REMARKS_FILE" ]; then
     echo "→ Фильтр remarks: $REMARKS_FILTER" >>"$LOG"
 fi
 
-# Читаем LAN_IP для DNS inbound
-LAN_IP="0.0.0.0"
-LAN_IP_FILE="$CONFIG_DIR/lan_ip"
-if [ -f "$LAN_IP_FILE" ]; then
-    LAN_IP="$(cat "$LAN_IP_FILE" | tr -d '\n\r')"
-    echo "→ LAN_IP: $LAN_IP" >>"$LOG"
-fi
-
 # ============================
 #   Обновление Xray
 # ============================
@@ -154,13 +140,13 @@ echo "→ Проверка обновлений Xray..." >>"$LOG"
 
 # Ожидание доступности GitHub API
 for i in $(seq 1 5); do
-    if curl -s -H "User-Agent: $SUB_USER_AGENT" --max-time 3 https://api.github.com >/dev/null 2>&1; then
+    if curl -s --max-time 3 https://api.github.com >/dev/null 2>&1; then
         break
     fi
     sleep 2
 done
 
-LATEST_VERSION=$(curl -s -H "User-Agent: $SUB_USER_AGENT" --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
+LATEST_VERSION=$(curl -s --user-agent "OpenWrt-Xray/1.0" --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
 
 if [ -z "$LATEST_VERSION" ]; then
@@ -178,7 +164,7 @@ else
     ZIP_DEST="$TMP_DIR/xray.zip"
     SHA_FILE="$STATE_DIR/xray.zip.sha256sum"
 
-    if download_file "${ZIP_URL}.dgst" "$STATE_DIR/xray.dgst"; then
+    if fetch_url "${ZIP_URL}.dgst" "$STATE_DIR/xray.dgst"; then
         REMOTE_SHA=$(extract_sha256 "$STATE_DIR/xray.dgst")
 
         if [ -n "$REMOTE_SHA" ]; then
@@ -189,7 +175,7 @@ else
                 echo "✓ Xray ZIP не изменился" >>"$LOG"
             else
                 echo "→ Скачиваем Xray ZIP..." >>"$LOG"
-                if download_file "$ZIP_URL" "$ZIP_DEST"; then
+                if fetch_url "$ZIP_URL" "$ZIP_DEST"; then
                     LOCAL_SHA=$(sha256sum "$ZIP_DEST" | awk '{print $1}')
                     if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
                         echo "$REMOTE_SHA" >"$SHA_FILE"
@@ -233,7 +219,7 @@ update_geo() {
     echo "→ Обновление $BASE..." >>"$LOG"
 
     # Скачиваем SHA256
-    if ! download_file "${URL}.sha256sum" "$TMP_SHA"; then
+    if ! fetch_url "${URL}.sha256sum" "$TMP_SHA"; then
         echo "[!] Не удалось скачать sha256sum для $BASE — пропускаем" >>"$LOG"
         return 1
     fi
@@ -251,7 +237,7 @@ update_geo() {
     fi
 
     # Скачиваем сам файл
-    if ! download_file "$URL" "$TMP_DEST"; then
+    if ! fetch_url "$URL" "$TMP_DEST"; then
         echo "[!] Не удалось скачать $BASE — пропускаем" >>"$LOG"
         return 1
     fi
@@ -280,70 +266,31 @@ update_geo "$GEOSITE_URL" "$GEOSITE"
 echo "→ Генерация config.json (User-Agent: $SUB_USER_AGENT)..." >>"$LOG"
 
 # Скачиваем подписку
-if download_file "$SUB_URL" "$TMP_DIR/sub.txt" "User-Agent: $SUB_USER_AGENT" "x-hwid: $HWID"; then
+if curl -s -L -H "User-Agent: $SUB_USER_AGENT" -H "x-hwid: $HWID" "$SUB_URL" -o "$TMP_DIR/sub.txt"; then
     
     # Проверяем, что скачалось не HTML
     if head -n 1 "$TMP_DIR/sub.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
         echo "[X] Подписка вернула HTML, а не данные" >>"$LOG"
     else
-        # Определяем формат по User-Agent
-        case "$SUB_USER_AGENT" in
-            *happ*|*Happ*|*HAPP*|*singbox*|*Singbox*|*sfa*|*sfi*|*sfm*|*sft*|*karing*)
-                # JSON формат (Happ, Sing-box, Karing)
-                echo "  → Используем JSON формат (прямая генерация)" >>"$LOG"
-                if [ -n "$REMARKS_FILTER" ]; then
-                    echo "  → Фильтр remarks: $REMARKS_FILTER" >>"$LOG"
-                fi
-
-                # Делаем бекап текущего config.json
-                cp "$CONFIG_JSON" "$CONFIG_JSON.bak" 2>/dev/null || true
-
-                if [ -n "$REMARKS_FILTER" ]; then
-                    python3 "$GENERATOR" --format json --listen-ip "$LAN_IP" --output "$TMP_DIR/config.json" --remarks "$REMARKS_FILTER" < "$TMP_DIR/sub.txt" 2>>"$LOG"
-                else
-                    python3 "$GENERATOR" --format json --listen-ip "$LAN_IP" --output "$TMP_DIR/config.json" < "$TMP_DIR/sub.txt" 2>>"$LOG"
-                fi
-
-                if [ -f "$TMP_DIR/config.json" ] && xray run -test -config "$TMP_DIR/config.json" >>"$LOG" 2>&1; then
+        # Единый пайплайн: парсер (с автоопределением формата) → генератор
+        PARSER_ARGS="python3 $PARSER --ua \"$SUB_USER_AGENT\""
+        [ -n "$REMARKS_FILTER" ] && PARSER_ARGS="$PARSER_ARGS --remarks \"$REMARKS_FILTER\""
+        
+        if eval $PARSER_ARGS < "$TMP_DIR/sub.txt" > "$TMP_DIR/parsed.json" 2>>"$LOG"; then
+            if python3 "$GENERATOR" --format unified --output "$TMP_DIR/config.json" < "$TMP_DIR/parsed.json" 2>>"$LOG"; then
+                if xray run -test -config "$TMP_DIR/config.json" >>"$LOG" 2>&1; then
                     mv "$TMP_DIR/config.json" "$CONFIG_JSON"
-                    echo "[+] Новый config.json установлен (JSON формат)" >>"$LOG"
+                    echo "[+] Новый config.json установлен" >>"$LOG"
                 else
                     echo "[X] Новый config.json невалиден" >>"$LOG"
-                    # Восстанавливаем бекап
-                    if [ -f "$CONFIG_JSON.bak" ]; then
-                        cp "$CONFIG_JSON.bak" "$CONFIG_JSON"
-                        echo "[!] Восстановлен предыдущий config.json из бекапа" >>"$LOG"
-                    fi
+                    xray run -test -config "$TMP_DIR/config.json" 2>>"$LOG"
                 fi
-                ;;
-            *)
-                # Base64 формат (VLESS URI)
-                echo "  → Используем Base64 формат (VLESS URI -> парсер)" >>"$LOG"
-                
-                # Делаем бекап текущего config.json
-                cp "$CONFIG_JSON" "$CONFIG_JSON.bak" 2>/dev/null || true
-                
-                if python3 "$PARSER" < "$TMP_DIR/sub.txt" > "$TMP_DIR/parsed.json" 2>>"$LOG"; then
-                    if python3 "$GENERATOR" --format vless --listen-ip "$LAN_IP" --output "$TMP_DIR/config.json" < "$TMP_DIR/parsed.json" 2>>"$LOG"; then
-                        if [ -f "$TMP_DIR/config.json" ] && xray run -test -config "$TMP_DIR/config.json" >>"$LOG" 2>&1; then
-                            mv "$TMP_DIR/config.json" "$CONFIG_JSON"
-                            echo "[+] Новый config.json установлен (VLESS формат)" >>"$LOG"
-                        else
-                            echo "[X] Новый config.json невалиден" >>"$LOG"
-                            # Восстанавливаем бекап
-                            if [ -f "$CONFIG_JSON.bak" ]; then
-                                cp "$CONFIG_JSON.bak" "$CONFIG_JSON"
-                                echo "[!] Восстановлен предыдущий config.json из бекапа" >>"$LOG"
-                            fi
-                        fi
-                    else
-                        echo "[X] Ошибка генератора конфига (VLESS)" >>"$LOG"
-                    fi
-                else
-                    echo "[X] Ошибка парсера подписки (VLESS)" >>"$LOG"
-                fi
-                ;;
-        esac
+            else
+                echo "[X] Ошибка генератора конфига" >>"$LOG"
+            fi
+        else
+            echo "[X] Ошибка парсера подписки" >>"$LOG"
+        fi
     fi
 else
     echo "[!] Не удалось скачать подписку" >>"$LOG"
@@ -369,7 +316,7 @@ else
 fi
 
 # ============================
-#   Обновление nftables правил (через fw4 интеграцию)
+#   Пересборка nftables правил
 # ============================
 
 echo "→ Обновление nftables правил..." >>"$LOG"
@@ -377,6 +324,7 @@ if /usr/share/xray/update-nft.sh >>"$LOG" 2>&1; then
     echo "[+] nftables правила обновлены" >>"$LOG"
 else
     echo "[X] Ошибка при обновлении nftables" >>"$LOG"
+    # Не останавливаем Xray, только логируем
 fi
 
 # ============================

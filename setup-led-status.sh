@@ -15,26 +15,10 @@ if [ ! -d "/sys/class/leds/white:wan-online" ]; then
     exit 1
 fi
 
-# Удаляем только старые Xray-конфигурации LED (остальные LED системы не трогаем)
-# После удаления индексы сдвигаются, поэтому удаляем по индексу 0, пока есть совпадения
-LED_NAMES="Xray_Status xray_traffic wan_online Xray_Traffic Internet_Status"
-for led_name in $LED_NAMES; do
-    while true; do
-        idx=0
-        found=false
-        while [ $idx -lt 10 ]; do
-            name="$(uci -q get system.@led[$idx].name 2>/dev/null || true)"
-            if [ "$name" = "$led_name" ]; then
-                uci delete system.@led[$idx] 2>/dev/null && found=true
-                break
-            fi
-            idx=$((idx + 1))
-        done
-        [ "$found" = false ] && break
-    done
-done 2>/dev/null || true
+# Удаляем ВСЕ старые LED-конфигурации
+while uci -q delete system.@led[0]; do :; done 2>/dev/null || true
 uci commit system
-/etc/init.d/led restart 2>/dev/null || service led restart 2>/dev/null || true
+service led restart
 
 # LED 1: Xray трафик (wps мигает при трафике через lo)
 uci add system led
@@ -50,8 +34,7 @@ service led restart
 # LED 2: Интернет (проверка через gen_204)
 cat > /usr/share/xray/net-check.sh << 'EOF'
 #!/bin/sh
-# Проверка доступа в интернет через стандартный endpoint Android/Chrome
-if curl -fs --max-time 5 https://connectivitycheck.gstatic.com/generate_204 >/dev/null 2>&1; then
+if curl -fs --max-time 5 https://www.google.com/gen_204 >/dev/null 2>&1; then
     echo "default-on" > /sys/class/leds/white:wan-online/trigger
 else
     echo "none" > /sys/class/leds/white:wan-online/trigger

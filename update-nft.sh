@@ -2,30 +2,27 @@
 # OpenWrt — обновление nftables правил для Xray TProxy
 
 CONF="/etc/xray/config.json"
-LAN_IF="br-lan"
 
-# Автоопределение LAN интерфейса, если br-lan отсутствует
-if ! ip link show br-lan >/dev/null 2>&1; then
-    LAN_IF=$(uci -q get network.lan.device 2>/dev/null)
-    [ -z "$LAN_IF" ] && {
-        logger -t update-nft "Не удалось определить LAN интерфейс"
-        exit 1
-    }
-    logger -t update-nft "LAN интерфейс auto-detected: $LAN_IF"
+# Автоопределение LAN интерфейса
+if ip link show br-lan >/dev/null 2>&1; then
+    LAN_IF="br-lan"
+else
+    # Fallback: читаем из UCI
+    LAN_IF=$(uci -q get network.lan.device || uci -q get network.lan.ifname || echo "br-lan")
+    # Если UCI вернул несколько интерфейсов (bridge), берём первый
+    LAN_IF="${LAN_IF%% *}"
 fi
 
-# Финальная проверка, что LAN_IF не пуст
-[ -z "$LAN_IF" ] && {
-    logger -t update-nft "LAN_IF пуст, невозможно применить правила"
-    exit 1
-}
+# Автоопределение Guest интерфейса
+if ip link show br-guest >/dev/null 2>&1; then
+    GUEST_IF="br-guest"
+else
+    GUEST_IF=$(uci -q get network.guest.device || uci -q get network.guest.ifname || echo "")
+    GUEST_IF="${GUEST_IF%% *}"
+fi
 
-# Извлекаем IP‑адреса серверов из config.json
 extract_server_ips() {
-    local raw
-
-    # Пробуем Python-парсер
-    raw=$(python3 -c '
+    python3 -c '
 import json, sys
 try:
     with open(sys.argv[1]) as f:
@@ -34,137 +31,96 @@ try:
     for ob in cfg.get("outbounds", []):
         for vnext in ob.get("settings", {}).get("vnext", []):
             addr = vnext.get("address")
-            if isinstance(addr, str) and "." in addr:
+            if isinstance(addr, str) and "." in addr and addr not in ["hole", "0.0.0.0", "127.0.0.1"]:
                 addrs.add(addr)
     for a in sorted(addrs):
         print(a)
 except:
     pass
-' "$CONF" 2>/dev/null)
-
-    # Fallback на grep
-    if [ -z "$raw" ]; then
-        raw=$(grep -o '"address"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONF" 2>/dev/null |
-            sed 's/.*"\([^"]*\)"$/\1/' |
-            sort -u)
-    fi
-
-    [ -z "$raw" ] && return
-
-    # Разделяем IP и домены, резолвим домены
-    local ips=""
-    while IFS= read -r addr; do
-        case "$addr" in
-            "hole" | "0.0.0.0" | "127.0.0.1" | "")
-                continue
-                ;;
-            *[a-zA-Z]*)
-                # Домен — резолвим IP
-                local resolved
-                resolved=$(resolveip -4 "$addr" 2>/dev/null)
-                if [ -n "$resolved" ]; then
-                    ips="$ips,$resolved"
-                    logger -t update-nft "Resolved $addr → $resolved"
-                else
-                    logger -t update-nft "Failed to resolve $addr"
-                fi
-                ;;
-            *.*.*.*)
-                # Уже IP — проверяем валидность
-                if echo "$addr" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-                    ips="$ips,$addr"
-                fi
-                ;;
-        esac
-    done <<EOF
-$raw
-EOF
-
-    echo "$ips" | sed 's/^,//'
+' "$CONF" 2>/dev/null
 }
 
 setup_network() {
-    # Очистка старых правил
+    # Policy routing
     while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
     ip route flush table 100 2>/dev/null
-
-    # Policy routing
     ip rule add fwmark 1 table 100
     ip route add local 0.0.0.0/0 dev lo table 100
 
-    # Bypass IPs (прокси-серверы из подписки)
-    local bypass_ips
-    bypass_ips=$(extract_server_ips)
-
-    # nftables
-    nft list table inet xray >/dev/null 2>&1 && nft delete table inet xray
-    local nft_file="/tmp/xray.nft"
-
-    cat >"$nft_file" <<NFT
-table inet xray {
-    chain prerouting {
-        type filter hook prerouting priority mangle; policy accept;
-
-        # 1. Bypass локальных и служебных подсетей
-        ip daddr {
-            127.0.0.0/8,
-            10.0.0.0/8,
-            172.16.0.0/12,
-            192.168.0.0/16,
-            169.254.0.0/16,
-            224.0.0.0/3
-        } return;
-
-        # 2. Bypass DoH/DNS-серверов (чтобы Xray мог отправлять DoH-запросы)
-        ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return;
-
-        # 3. Bypass управления Cudy (SSH, WebUI)
-        ip daddr 192.168.1.120 tcp dport { 22, 80, 443 } return;
-
-NFT
-
-    # 4. Bypass прокси-серверов (чтобы трафик к прокси не зацикливался)
-    if [ -n "$bypass_ips" ]; then
-        VALID_IPS=$(echo "$bypass_ips" | tr ',' '\n' | grep -Ex '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | tr '\n' ',' | sed 's/,$//')
-        if [ -n "$VALID_IPS" ]; then
-            cat >>"$nft_file" <<NFT
-        # 4. Bypass прокси-серверов
-        ip daddr { $VALID_IPS } return;
-NFT
-            logger -t update-nft "Bypass IPs added: $VALID_IPS"
-        fi
-    fi
-
-    cat >>"$nft_file" <<NFT
-
-        # 5. Bypass уже помеченного трафика (Xray выставляет mark 255, TProxy — 1)
-        meta mark != 0 return;
-
-		# 6. Блокируем UDP 443 (QUIC)
-		udp dport 443 drop;
-
-        # 7. DNS — не трогаем (Xray сам слушает 53 порт)
-        udp dport 53 return;
-
-        # 8. DHCP — не трогаем
-        udp dport { 67, 68 } return;
-
-        # 9. Всё остальное с LAN → TProxy
-        iifname "$LAN_IF" meta l4proto { tcp, udp } \
-            tproxy ip to 127.0.0.1:12345 meta mark set 1 accept;
-    }
-}
-NFT
-
-    if nft -f "$nft_file"; then
-        logger -t update-nft "Network rules applied successfully"
+    # Создаём цепочку xray_tproxy (PREROUTING)
+    if ! nft list chain inet fw4 xray_tproxy 2>/dev/null | grep -q "chain xray_tproxy"; then
+        nft add chain inet fw4 xray_tproxy
+        nft add rule inet fw4 prerouting jump xray_tproxy
     else
-        logger -t update-nft "nftables apply failed"
-        rm -f "$nft_file"
-        return 1
+        nft flush chain inet fw4 xray_tproxy
     fi
 
-    rm -f "$nft_file"
+    # Создаём цепочку xray_output (OUTPUT — для проксирования трафика самого роутера)
+    if ! nft list chain inet fw4 xray_output 2>/dev/null | grep -q "chain xray_output"; then
+        nft add chain inet fw4 xray_output
+        nft add rule inet fw4 output jump xray_output
+    else
+        nft flush chain inet fw4 xray_output
+    fi
+
+    # ========== PREROUTING (xray_tproxy) ==========
+
+    # Если пакет уже отмаркирован Xray (mark 2) — пропускаем (защита от петель)
+    nft add rule inet fw4 xray_tproxy meta mark 2 return
+
+    # Базовые bypass
+    nft add rule inet fw4 xray_tproxy ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return
+    nft add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
+
+    # DHCP — НЕ ТРОГАЕМ
+    nft add rule inet fw4 xray_tproxy udp dport { 67, 68 } return
+
+    # Bypass для прокси-серверов
+    for ip in $(extract_server_ips); do
+        if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            nft add rule inet fw4 xray_tproxy ip daddr $ip return
+        fi
+    done
+
+    # Гостевая сеть (если существует)
+    if [ -n "$GUEST_IF" ] && ip link show "$GUEST_IF" >/dev/null 2>&1; then
+        nft add rule inet fw4 xray_tproxy iifname "$GUEST_IF" return
+    fi
+
+    # Блокировка QUIC (UDP/443) — ДО TProxy, иначе пакет уйдёт в Xray до проверки
+    nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" udp dport 443 drop
+
+    # TProxy для LAN (сохраняем оригинальный mark 0x1 для policy routing)
+    nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
+    nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
+
+    # TProxy для трафика самого роутера (перенаправлен из OUTPUT с mark 0x1 через lo)
+    # Эти правила не имеют iifname — сработают для пакетов, уже отмаркированных OUTPUT chain
+    nft add rule inet fw4 xray_tproxy meta mark 0x1 meta l4proto tcp tproxy ip to 127.0.0.1:12345 accept
+    nft add rule inet fw4 xray_tproxy meta mark 0x1 meta l4proto udp tproxy ip to 127.0.0.1:12345 accept
+
+    # ========== OUTPUT (xray_output — трафик самого роутера) ==========
+
+    # Loop prevention: пакеты с mark 2 (от Xray outbound) — пропускаем, не трогаем
+    nft add rule inet fw4 xray_output meta mark 2 return
+
+    # Базовые bypass (локальные сети)
+    nft add rule inet fw4 xray_output ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return
+    nft add rule inet fw4 xray_output ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
+    nft add rule inet fw4 xray_output udp dport { 67, 68 } return
+
+    # Bypass для прокси-серверов
+    for ip in $(extract_server_ips); do
+        if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            nft add rule inet fw4 xray_output ip daddr $ip return
+        fi
+    done
+
+    # Помечаем mark 1 для перенаправления через PREROUTING → TProxy
+    nft add rule inet fw4 xray_output meta l4proto tcp meta mark set 1
+    nft add rule inet fw4 xray_output meta l4proto udp meta mark set 1
+
+    logger -t update-nft "Xray TProxy rules applied"
 }
 
 setup_network

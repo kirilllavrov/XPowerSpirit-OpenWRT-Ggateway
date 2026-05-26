@@ -1,21 +1,35 @@
 #!/usr/bin/env python3
+"""
+Xray Subscription Parser
+Поддерживает два входных формата:
+  1. Base64 VLESS (традиционный) — без --ua или с любым неизвестным User-Agent
+  2. JSON (Happ/Sing-box/Karing) — с --ua happ/singbox/sfa/sfi/sfm/sft/karing
+
+Унифицированный режим (с --ua):
+  Определяет формат по User-Agent, парсит, проверяет hole,
+  выводит {"hole": bool, "outbounds": [...]}
+
+Совместимость:
+  Без --ua — поведение не меняется (Base64 VLESS, вывод JSON-массива outbounds).
+"""
 import sys
 import base64
 import json
 import urllib.parse as urlparse
 import urllib.request
 import re
+import argparse
 import syslog
+
+syslog.openlog("xray-parser")
 
 
 # -----------------------------
 # ЛОГИРОВАНИЕ ОШИБОК
 # -----------------------------
-syslog.openlog("xray-sub-parser")
-
 def log_error(msg: str) -> None:
     """Отправляет сообщение об ошибке в syslog и в stderr"""
-    syslog.syslog(syslog.LOG_ERR, f"xray-parser: {msg}")
+    syslog.syslog(syslog.LOG_ERR, msg)
     print(msg, file=sys.stderr)
 
 
@@ -248,9 +262,162 @@ def parse_vless_uri(uri: str, idx: int):
     }
 
 
-# -----------------------------
-# MAIN
-# -----------------------------
+# ============================================
+#   УНИФИЦИРОВАННЫЙ РЕЖИМ (--ua)
+# ============================================
+
+def _is_json_format(user_agent: str) -> bool:
+    """Определяет, является ли User-Agent признаком JSON-подписки"""
+    ua_lower = user_agent.lower()
+    json_markers = ["happ", "singbox", "sfa", "sfi", "sfm", "sft", "karing"]
+    return any(m in ua_lower for m in json_markers)
+
+
+def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
+    """
+    Парсит JSON-подписку (Happ/Sing-box формат).
+    Возвращает {"hole": bool, "outbounds": [сырые outbounds из подписки]}.
+    """
+    try:
+        data = json.loads(raw_data)
+    except Exception as e:
+        log_error(f"Failed to parse JSON subscription: {e}")
+        return {"hole": False, "outbounds": []}
+
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        log_error("Unexpected JSON structure (expected list or dict)")
+        return {"hole": False, "outbounds": []}
+
+    # Проверка hole
+    hole = False
+    for config in data:
+        for ob in config.get("outbounds", []):
+            try:
+                addr = ob.get("settings", {}).get("vnext", [{}])[0].get("address", "")
+                if addr == "hole":
+                    hole = True
+            except Exception:
+                pass
+
+    # Извлечение outbounds
+    all_outbounds = []
+    seen_tags = set()
+    found_profile = False
+
+    for config in data:
+        config_remarks = config.get("remarks", "")
+
+        # Фильтрация по remarks
+        if remarks_filter:
+            if remarks_filter.lower() not in config_remarks.lower():
+                print(f"  → Пропускаем профиль: {config_remarks}", file=sys.stderr)
+                continue
+
+        found_profile = True
+        print(f"  → Используем профиль: {config_remarks}", file=sys.stderr)
+
+        for ob in config.get("outbounds", []):
+            protocol = ob.get("protocol", "")
+            # Пропускаем служебные outbounds
+            if protocol in ("freedom", "blackhole", "dns"):
+                continue
+
+            # Нормализуем тег (минимально)
+            tag = ob.get("tag", "") or "proxy"
+            tag = normalize_tag(tag)
+            counter = 2
+            base_tag = tag
+            while tag in seen_tags:
+                tag = normalize_tag(f"{base_tag}-{counter}")
+                counter += 1
+            ob["tag"] = tag
+            seen_tags.add(tag)
+
+            all_outbounds.append(ob)
+
+    if remarks_filter and not found_profile:
+        print(f"  [X] Профиль с remarks '{remarks_filter}' не найден!", file=sys.stderr)
+        print(f"  → Доступные профили:", file=sys.stderr)
+        for config in data:
+            print(f"      - {config.get('remarks', '')}", file=sys.stderr)
+
+    return {"hole": hole, "outbounds": all_outbounds}
+
+
+def unified_main():
+    """
+    Унифицированный режим: определяет формат по --ua, парсит подписку,
+    выводит {"hole": bool, "outbounds": [...]}.
+    """
+    parser = argparse.ArgumentParser(description='Xray subscription parser (unified)')
+    parser.add_argument('--ua', required=True, help='User-Agent used for subscription request')
+    parser.add_argument('--remarks', default='', help='Filter by remarks (JSON format only)')
+    args = parser.parse_args()
+
+    raw = sys.stdin.read().strip()
+    if not raw:
+        log_error("Empty input")
+        print(json.dumps({"hole": False, "outbounds": []}))
+        sys.exit(1)
+
+    # Загружаем по URL, если нужно
+    data, success = try_download(raw)
+    if not success or not data:
+        log_error("Failed to download subscription")
+        print(json.dumps({"hole": False, "outbounds": []}))
+        sys.exit(1)
+
+    if _is_json_format(args.ua):
+        # --- JSON формат (Happ/Sing-box) ---
+        print("  → Определён JSON формат подписки (Happ/Sing-box)", file=sys.stderr)
+        result = parse_json_subscription(data, args.remarks)
+    else:
+        # --- Base64 VLESS формат ---
+        print("  → Определён Base64 VLESS формат подписки", file=sys.stderr)
+
+        data, decoded = try_base64_decode(data)
+        if not decoded:
+            log_error("Failed to decode Base64 (no vless:// found)")
+            print(json.dumps({"hole": False, "outbounds": []}))
+            sys.exit(1)
+
+        if "vless://" not in data:
+            log_error("No vless:// URIs found in subscription")
+            print(json.dumps({"hole": False, "outbounds": []}))
+            sys.exit(1)
+
+        lines = [l.strip() for l in data.splitlines() if l.strip()]
+        outbounds = []
+        hole = False
+        idx = 0
+
+        for line in lines:
+            if line.startswith("vless://"):
+                ob = parse_vless_uri(line, idx)
+                if ob:
+                    # Проверка hole
+                    try:
+                        addr = ob.get("settings", {}).get("vnext", [{}])[0].get("address", "")
+                        if addr == "hole":
+                            hole = True
+                    except Exception:
+                        pass
+                    outbounds.append(ob)
+                    idx += 1
+
+        if not outbounds:
+            log_error("No valid vless:// URIs parsed")
+
+        result = {"hole": hole, "outbounds": outbounds}
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+# ================================================
+#   СТАРЫЙ РЕЖИМ (без --ua) — обратная совместимость
+# ================================================
 def main():
     raw = sys.stdin.read().strip()
     if not raw:
@@ -299,4 +466,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Если передан --ua → унифицированный режим
+    if "--ua" in sys.argv:
+        unified_main()
+    else:
+        main()
