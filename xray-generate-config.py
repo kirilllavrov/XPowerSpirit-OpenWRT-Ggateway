@@ -23,9 +23,21 @@ import argparse
 #   КОНФИГУРАЦИЯ
 # ============================================
 
-DOMAIN_WHITELIST = [
-    # "example.com"
-]
+# Базовый whitelist доменов (дополняется из /etc/xray/dwl_domain)
+def _load_domain_whitelist() -> list:
+    """Загружает whitelist доменов: базовый + из /etc/xray/dwl_domain"""
+    whitelist = []
+    try:
+        with open("/etc/xray/dwl_domain", "r") as f:
+            for line in f:
+                domain = line.strip()
+                if domain and not domain.startswith("#"):
+                    whitelist.append(domain)
+    except FileNotFoundError:
+        pass
+    return whitelist
+
+DOMAIN_WHITELIST = _load_domain_whitelist()
 
 
 # ============================================

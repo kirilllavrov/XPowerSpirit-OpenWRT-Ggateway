@@ -17,6 +17,7 @@
 #   --gw=X.X.X.X     IP основного роутера
 #   --sub-ua=UA      User-Agent для подписки
 #   --remarks=FILTER Фильтр remarks в JSON-подписке
+#   --dwl=DOMAIN     Приоритетный домен прокси-сервера (whitelist)
 
 # Логирование
 LOG_FILE="/tmp/xray_install.log"
@@ -82,6 +83,7 @@ LAN_MASK="255.255.255.0"
 GATEWAY_IP=""
 SUB_URL=""
 REMARKS_FILTER=""
+DWL_DOMAIN=""
 
 # ============================================
 #   АВТООПРЕДЕЛЕНИЕ СЕТИ
@@ -231,6 +233,7 @@ for arg in "$@"; do
 	--sub=*) SUB_URL="${arg#*=}" ;;
 	--sub-ua=*) SUB_USER_AGENT="${arg#*=}" ;;
 	--remarks=*) REMARKS_FILTER="${arg#*=}" ;;
+	--dwl=*) DWL_DOMAIN="${arg#*=}" ;;
 	--ip=*) ARG_IP="${arg#*=}" ;;
 	--mask=*) ARG_MASK="${arg#*=}" ;;
 	--gw=*) ARG_GW="${arg#*=}" ;;
@@ -509,6 +512,14 @@ download_script "$REPO/update-xray.sh" "$UPDATER"
 download_script "$REPO/update-nft.sh" "$NFT_UPDATER"
 
 echo "[+] Все скрипты загружены"
+
+# Сохраняем приоритетный домен в файл (генератор читает его при каждом запуске)
+if [ -n "$DWL_DOMAIN" ]; then
+	echo "$DWL_DOMAIN" > "$CONFIG_DIR/dwl_domain"
+	echo "  → Приоритетный домен сохранён: $DWL_DOMAIN"
+else
+	rm -f "$CONFIG_DIR/dwl_domain"
+fi
 
 # ============================================
 #   6. Геофайлы + HWID + config.json
