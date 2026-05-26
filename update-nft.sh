@@ -86,8 +86,9 @@ setup_network() {
     nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" udp dport 53 tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
     nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" tcp dport 53 tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
 
-    # 4. Публичные DNS (только для собственных нужд шлюза, когда Xray недоступен) — bypass
-    #    Клиентский DNS уже перехвачен правилом выше
+    # 4. Публичные DNS (не-DNS трафик к этим IP) — bypass
+    #    Клиентский DNS (порт 53) уже перехвачен правилом 3.
+    #    Собственный DNS шлюза идёт через OUTPUT (не попадает в PREROUTING).
     nft add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
 
     # 5. Прокси-серверы (VPS) — bypass (чтобы Xray мог к ним подключиться без повторного проксирования)
