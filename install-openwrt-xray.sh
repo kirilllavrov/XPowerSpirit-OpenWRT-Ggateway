@@ -305,8 +305,8 @@ CONF="/etc/xray/config.json"
 ASSET_DIR="/usr/share/xray"
 
 start_service() {
-    ntpd -q -p 77.88.8.8 2>/dev/null || \
-    ntpd -q -p 1.0.0.1 2>/dev/null || \
+    ntpd -q -p ru.pool.ntp.org 2>/dev/null || \
+    ntpd -q -p time.google.com 2>/dev/null || \
     logger -t xray "Time sync failed, continuing anyway"
     sleep 1
 
