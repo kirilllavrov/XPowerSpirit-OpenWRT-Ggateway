@@ -850,3 +850,7 @@ echo "    DNS для клиентов:  $LAN_IP"
 echo ""
 echo "  Проверка: curl --interface $LAN_IF https://ifconfig.me"
 echo "============================================"
+
+
+sleep 3
+reboot
