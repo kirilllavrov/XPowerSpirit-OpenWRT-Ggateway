@@ -325,6 +325,9 @@ fi
 # ============================================
 echo "=== Шаг 3: Настройка IP-адреса ==="
 
+# Запоминаем текущий IP до изменений
+OLD_IP="$LAN_IP"
+
 # Удаляем старые WAN/wan6 интерфейсы (если были с прошлой роли роутера)
 uci -q delete network.wan
 uci -q delete network.wan6
@@ -355,46 +358,29 @@ uci set dhcp.lan.ignore='1'
 uci set dhcp.lan.dhcpv6='disabled'
 uci set dhcp.lan.ra='disabled'
 
-uci commit network
-uci commit dhcp
-
 # Отключаем dnsmasq и odhcpd — они не нужны (нет DHCP, DNS через TProxy + network.lan.dns)
 service odhcpd stop 2>/dev/null || true
 service odhcpd disable 2>/dev/null || true
 service dnsmasq stop 2>/dev/null || true
 service dnsmasq disable 2>/dev/null || true
 
-# Применяем сетевые изменения
-echo "  → Применяем настройки сети..."
-/etc/init.d/network reload 2>/dev/null || service network reload 2>/dev/null || true
-sleep 3
+# Сохраняем UCI, но НЕ применяем — сеть не трогаем до ребута.
+# Все настройки (IP, DNS, маршруты) подхватятся при загрузке.
+uci commit network
+uci commit dhcp
 
-# Проверяем, что IP применился (только для статического режима)
-if [ "$USE_DHCP" != "1" ]; then
-	ACTUAL_IP=$(ip -4 addr show "$LAN_IF" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-	if [ "$ACTUAL_IP" != "$LAN_IP" ]; then
-		echo "  [!] IP не совпадает (ожидалось $LAN_IP, получено $ACTUAL_IP)"
-		echo "  → Пробуем принудительно..."
-		# Конвертируем маску в CIDR (255.255.255.0 → 24)
-		PREFIX=$(echo "$LAN_MASK" | awk -F. '{
-			c=0; for(i=1;i<=4;i++){n=$i; while(n>0){c++; n=n*2%256}}; print c
-		}')
-		ip addr flush dev "$LAN_IF" 2>/dev/null
-		ip addr add "${LAN_IP}/${PREFIX:-24}" dev "$LAN_IF"
-		ip route add default via "$GATEWAY_IP" 2>/dev/null
-		sleep 1
-	fi
-	echo "[+] Статический IP настроен: $LAN_IP, шлюз: $GATEWAY_IP"
-else
-	# В DHCP-режиме ждём получения адреса
-	for i in $(seq 1 10); do
-		LAN_IP=$(ip -4 addr show "$LAN_IF" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-		[ -n "$LAN_IP" ] && break
-		sleep 2
-	done
-	GATEWAY_IP=$(ip route | grep '^default' | awk '{print $3}')
-	echo "[+] DHCP: получен IP $LAN_IP, шлюз: $GATEWAY_IP"
+if [ "$USE_DHCP" != "1" ] && [ "$LAN_IP" != "$OLD_IP" ]; then
+	echo ""
+	echo "  ╔══════════════════════════════════════════════════╗"
+	echo "  ║  [!] IP изменится при перезагрузке:              ║"
+	echo "  ║      Было : $OLD_IP"
+	echo "  ║      Стало: $LAN_IP"
+	echo "  ║                                                 ║"
+	echo "  ║  После перезагрузки подключайтесь к $LAN_IP      ║"
+	echo "  ╚══════════════════════════════════════════════════╝"
+	echo ""
 fi
+echo "[+] UCI-конфигурация сети сохранена (применится при загрузке)"
 
 # ============================================
 #   4. Установка Xray
@@ -821,26 +807,21 @@ echo "=== Шаг 14: Запуск служб ==="
 service cron restart 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
 service firewall restart 2>/dev/null || /etc/init.d/firewall restart 2>/dev/null || true
 
-sleep 2
-/etc/init.d/xray start
-sleep 3
+echo "[+] Службы готовы. Xray запустится при загрузке через init.d"
 
 # ============================================
 #   15. Финальная проверка
 # ============================================
-echo "=== Шаг 15: Финальная проверка ==="
-
-if pgrep -a xray >/dev/null; then
-	echo "  ✓ Xray запущен"
-else
-	echo "  [!] Xray НЕ запущен — проверьте логи:"
-	echo "      tail -f /tmp/log/xray-error.log"
-fi
+echo "=== Шаг 15: Финал ==="
 
 echo ""
 echo "============================================"
 echo "  Установка завершена!"
 echo ""
+if [ "$USE_DHCP" != "1" ] && [ "$LAN_IP" != "$OLD_IP" ]; then
+	echo "  [!] IP изменится: $OLD_IP → $LAN_IP"
+	echo ""
+fi
 echo "  Xray-шлюз: $LAN_IP"
 echo "  Основной роутер (Keenetic): $GATEWAY_IP"
 echo ""
@@ -848,7 +829,8 @@ echo "  Настройте Keenetic DHCP:"
 echo "    Шлюз для клиентов: $LAN_IP"
 echo "    DNS для клиентов:  $LAN_IP"
 echo ""
-echo "  Проверка: curl --interface $LAN_IF https://ifconfig.me"
+echo "  Сейчас будет перезагрузка."
+echo "  После неё Xray запустится автоматически."
 echo "============================================"
 
 
