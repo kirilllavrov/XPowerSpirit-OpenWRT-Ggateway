@@ -1,8 +1,9 @@
 #!/bin/sh
 # OpenWrt — обновление Xray, geoip, geosite, подписки и config.json
+# Работает в обоих режимах: основной роутер и прозрачный шлюз
 # Поддерживает два формата подписки:
-#   - Base64 (VLESS URI) - User-Agent: OpenWrt-Xray/1.0
-#   - JSON (Happ/Sing-box) - User-Agent: happ/3.21 или singbox
+#   - Base64 (VLESS URI)
+#   - JSON (Happ/Sing-box)
 
 # ============================================
 #   КОНФИГУРАЦИЯ
