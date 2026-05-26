@@ -23,9 +23,11 @@ import argparse
 #   КОНФИГУРАЦИЯ
 # ============================================
 
-# Базовый whitelist доменов (дополняется из /etc/xray/dwl_domain)
+# Whitelist доменов для VLESS-подписок (из /etc/xray/dwl_domain)
+# Используется только в choose_best_server() для VLESS-формата.
+# В unified/json форматах не применяется — там балансировщик.
 def _load_domain_whitelist() -> list:
-    """Загружает whitelist доменов: базовый + из /etc/xray/dwl_domain"""
+    """Загружает whitelist из /etc/xray/dwl_domain (только для VLESS Base64 подписок)"""
     whitelist = []
     try:
         with open("/etc/xray/dwl_domain", "r") as f:

@@ -17,7 +17,7 @@
 #   --gw=X.X.X.X     IP основного роутера
 #   --sub-ua=UA      User-Agent для подписки
 #   --remarks=FILTER Фильтр remarks в JSON-подписке
-#   --dwl=DOMAIN     Приоритетный домен прокси-сервера (whitelist)
+#   --dwl=DOMAIN     Приоритетный домен для VLESS (Base64) подписок
 
 # Логирование
 LOG_FILE="/tmp/xray_install.log"
