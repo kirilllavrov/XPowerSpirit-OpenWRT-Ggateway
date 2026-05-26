@@ -315,15 +315,6 @@ def base_config() -> dict:
                     "destOverride": ["http", "tls"],
                     "routeOnly": True
                 }
-            },
-            {
-                "tag": "dns-local",
-                "listen": "127.0.0.1",
-                "port": 5353,
-                "protocol": "dokodemo-door",
-                "settings": {
-                    "allowedNetwork": "udp"
-                }
             }
         ]
     }
@@ -353,7 +344,8 @@ def build_direct_config() -> dict:
         "rules": [
             {
                 "type": "field",
-                "inboundTag": ["dns-local"],
+                "inboundTag": ["tproxy-in"],
+                "port": "53",
                 "outboundTag": "dns-out"
             },
             {
@@ -422,13 +414,14 @@ def build_rules(proxy_outbounds: list, direct_mode: bool = False) -> list:
     Если один прокси, использует прямой outboundTag.
     """
     rules = [
-        # Клиентский DNS (от dnsmasq) → dns-out (hijack → dns-inbuilt)
+        # Клиентский DNS (порт 53 через TProxy) → dns-out (hijack → dns-inbuilt)
         {
             "type": "field",
-            "inboundTag": ["dns-local"],
+            "inboundTag": ["tproxy-in"],
+            "port": "53",
             "outboundTag": "dns-out"
         },
-        # Ловим DNS через DoH, которые прошли мимо dnsmasq (от браузера)
+        # Ловим прямой DoH от браузеров — отправляем напрямую (уже зашифрован)
         {
             "type": "field",
             "domain": [
