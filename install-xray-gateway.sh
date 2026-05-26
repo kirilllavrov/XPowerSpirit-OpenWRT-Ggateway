@@ -34,6 +34,14 @@ echo ""
 	exit 1
 }
 
+# Проверка зависимостей
+for cmd in curl python3 unzip sha256sum; do
+	if ! command -v "$cmd" >/dev/null 2>&1; then
+		echo "[X] Не найден $cmd. Установите: opkg install $cmd"
+		exit 1
+	fi
+done
+
 # ============================================
 #   TIMEZONE + NTP
 # ============================================
@@ -364,8 +372,12 @@ if [ "$USE_DHCP" != "1" ]; then
 	if [ "$ACTUAL_IP" != "$LAN_IP" ]; then
 		echo "  [!] IP не совпадает (ожидалось $LAN_IP, получено $ACTUAL_IP)"
 		echo "  → Пробуем принудительно..."
+		# Конвертируем маску в CIDR (255.255.255.0 → 24)
+		PREFIX=$(echo "$LAN_MASK" | awk -F. '{
+			c=0; for(i=1;i<=4;i++){n=$i; while(n>0){c++; n=n*2%256}}; print c
+		}')
 		ip addr flush dev "$LAN_IF" 2>/dev/null
-		ip addr add "${LAN_IP}/24" dev "$LAN_IF"
+		ip addr add "${LAN_IP}/${PREFIX:-24}" dev "$LAN_IF"
 		ip route add default via "$GATEWAY_IP" 2>/dev/null
 		sleep 1
 	fi
@@ -622,13 +634,7 @@ CONF="/etc/xray/config.json"
 ASSET_DIR="/usr/share/xray"
 
 start_service() {
-    # Синхронизация времени (важно для TLS/REALITY)
-    ntpd -q -p ru.pool.ntp.org 2>/dev/null || \
-    ntpd -q -p time.google.com 2>/dev/null || \
-    logger -t xray "Time sync failed, continuing"
-    sleep 1
-
-    # Ждём сеть и DNS
+    # Ждём сеть
     for i in $(seq 1 15); do
         if ip route | grep -q default; then
             break
@@ -636,6 +642,12 @@ start_service() {
         logger -t xray "Waiting for network... ($i)"
         sleep 2
     done
+
+    # Синхронизация времени (важно для TLS/REALITY)
+    ntpd -q -p ru.pool.ntp.org 2>/dev/null || \
+    ntpd -q -p time.google.com 2>/dev/null || \
+    logger -t xray "Time sync failed, continuing"
+    sleep 1
 
     # Проверяем geo-файлы
     if [ ! -s "$ASSET_DIR/geoip.dat" ] || [ ! -s "$ASSET_DIR/geosite.dat" ]; then
