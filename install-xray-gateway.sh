@@ -1,23 +1,34 @@
 #!/bin/sh
 # OpenWrt 25.12.x — Xray Transparent Gateway (IPv4-only)
 #
-# Режим прозрачного шлюза:
-#   Устройство НЕ является основным роутером.
-#   Основной роутер (Keenetic) раздаёт DHCP, NAT, интернет.
-#   Xray-шлюз получает статический IP, принимает трафик клиентов,
-#   обрабатывает через Xray TProxy и отправляет через основной роутер в интернет.
+# Прозрачный шлюз: устройство НЕ основной роутер.
+# Основной роутер (Keenetic) раздаёт DHCP, NAT, интернет.
+# Xray-шлюз получает статический IP, принимает трафик клиентов,
+# обрабатывает через Xray TProxy и отправляет через основной роутер в интернет.
 #
 # Топология:
 #   Internet → Keenetic (192.168.1.1) → Xray GW (192.168.1.2) → Клиенты
 #   Клиенты: gateway=192.168.1.2, dns=192.168.1.2
+#
+# Параметры (все опциональны, недостающие запрашиваются интерактивно):
+#   --sub=URL        URL подписки
+#   --ip=X.X.X.X     Статический IP шлюза
+#   --mask=X.X.X.X   Маска подсети (по умолчанию 255.255.255.0)
+#   --gw=X.X.X.X     IP основного роутера
+#   --sub-ua=UA      User-Agent для подписки
+#   --remarks=FILTER Фильтр remarks в JSON-подписке
 
 # Логирование
 LOG_FILE="/tmp/xray_install.log"
 exec 1> >(tee -a "$LOG_FILE")
 exec 2>&1
 
-echo "=== Установка Xray Transparent Gateway ==="
-echo "  "
+echo ""
+echo "╔══════════════════════════════════════════════════════╗"
+echo "║     Xray Transparent Gateway — установка на OpenWrt  ║"
+echo "╚══════════════════════════════════════════════════════╝"
+echo ""
+
 [ "$(id -u)" != "0" ] && {
 	echo "[X] Запускать нужно от root"
 	exit 1
@@ -40,7 +51,7 @@ GEO_DIR="/usr/share/xray"
 STATE_DIR="/etc/xray/state"
 SUB_USER_AGENT="OpenWrt-Xray/1.0"
 
-# Сетевые параметры (автоопределение или ручное задание)
+# Сетевые параметры
 LAN_IF=""
 LAN_IP=""
 LAN_MASK="255.255.255.0"
@@ -52,9 +63,8 @@ REMARKS_FILTER=""
 #   АВТООПРЕДЕЛЕНИЕ СЕТИ
 # ============================================
 detect_network() {
-	echo "→ Автоопределение сетевых параметров..."
+	echo "  [1/3] Определяю сетевой интерфейс..."
 
-	# Ищем LAN интерфейс (bridge или eth)
 	if ip link show br-lan >/dev/null 2>&1; then
 		LAN_IF="br-lan"
 	elif ip link show eth0 >/dev/null 2>&1; then
@@ -62,65 +72,147 @@ detect_network() {
 	elif ip link show eth1 >/dev/null 2>&1; then
 		LAN_IF="eth1"
 	else
-		# Пробуем найти интерфейс с IP
 		LAN_IF=$(ip -4 addr show | grep -v 'lo\|docker\|virbr\|wg\|tun' | grep 'inet ' | head -1 | awk '{print $NF}')
 	fi
 
-	if [ -z "$LAN_IF" ]; then
-		echo "[X] Не удалось определить сетевой интерфейс"
-		exit 1
-	fi
-	echo "  → LAN интерфейс: $LAN_IF"
+	[ -z "$LAN_IF" ] && { echo "[X] Не удалось определить сетевой интерфейс"; exit 1; }
+	echo "    Интерфейс: $LAN_IF"
 
-	# Определяем текущий IP и шлюз
+	# Определяем текущий IP
 	LAN_IP=$(ip -4 addr show "$LAN_IF" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
 	if [ -z "$LAN_IP" ]; then
-		# Если нет IP, пробуем получить через DHCP
-		echo "  → Запрашиваю IP по DHCP..."
+		echo "    Запрашиваю IP по DHCP..."
 		udhcpc -i "$LAN_IF" -q -t 5 -n 2>/dev/null || true
 		sleep 2
 		LAN_IP=$(ip -4 addr show "$LAN_IF" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
 	fi
 
-	if [ -z "$LAN_IP" ]; then
-		echo "[X] Не удалось получить IP-адрес на $LAN_IF"
-		echo "  → Проверьте подключение кабеля к Keenetic"
-		exit 1
-	fi
-	echo "  → Текущий IP: $LAN_IP"
+	[ -z "$LAN_IP" ] && { echo "[X] Не удалось получить IP. Проверьте кабель."; exit 1; }
 
-	# Определяем Keenetic (текущий default gateway)
+	# Определяем шлюз по умолчанию
 	KEENETIC_IP=$(ip route | grep '^default' | awk '{print $3}')
 	if [ -z "$KEENETIC_IP" ]; then
-		# Пробуем угадать: первый IP подсети
 		SUBNET=$(echo "$LAN_IP" | cut -d'.' -f1-3)
 		KEENETIC_IP="${SUBNET}.1"
-		echo "  → Шлюз не найден, предполагаю: $KEENETIC_IP"
-	else
-		echo "  → Основной шлюз (Keenetic): $KEENETIC_IP"
 	fi
+}
+
+# ============================================
+#   ИНТЕРАКТИВНЫЙ ВЫБОР IP
+# ============================================
+configure_network() {
+	echo ""
+	echo "  [2/3] Настройка IP-адреса шлюза"
+	echo "  ─────────────────────────────────────────────"
+	echo "  Обнаружена сеть:"
+	echo "    Интерфейс : $LAN_IF"
+	echo "    Текущий IP: $LAN_IP"
+	echo "    Маска     : $LAN_MASK"
+	echo "    Роутер    : $KEENETIC_IP"
+	echo ""
+
+	# Если все параметры уже заданы через аргументы — не спрашиваем
+	if [ -n "$ARG_IP" ] && [ -n "$ARG_GW" ]; then
+		LAN_IP="$ARG_IP"
+		KEENETIC_IP="$ARG_GW"
+		[ -n "$ARG_MASK" ] && LAN_MASK="$ARG_MASK"
+		echo "    → Использую параметры командной строки"
+		echo "    IP: $LAN_IP, маска: $LAN_MASK, роутер: $KEENETIC_IP"
+		return
+	fi
+
+	# Если IP задан аргументом, но GW нет — используем IP из аргумента, GW авто
+	if [ -n "$ARG_IP" ]; then
+		LAN_IP="$ARG_IP"
+		[ -n "$ARG_MASK" ] && LAN_MASK="$ARG_MASK"
+		[ -n "$ARG_GW" ] && KEENETIC_IP="$ARG_GW"
+		echo "    → IP задан аргументом: $LAN_IP"
+		echo "    Роутер (авто): $KEENETIC_IP"
+	fi
+
+	echo "  Выберите действие:"
+	echo "    [1] Оставить обнаруженный IP ($LAN_IP)"
+	echo "    [2] Ввести другой IP вручную"
+	echo "    [3] Оставить DHCP (не рекомендуется)"
+	echo ""
+	printf "  Ваш выбор [1]: "
+	read -r CHOICE
+	CHOICE="${CHOICE:-1}"
+
+	case "$CHOICE" in
+	1)
+		echo "    → Оставляю: $LAN_IP / $LAN_MASK, роутер $KEENETIC_IP"
+		;;
+	2)
+		echo ""
+		printf "    IP адрес шлюза [${LAN_IP}]: "
+		read -r NEW_IP
+		[ -n "$NEW_IP" ] && LAN_IP="$NEW_IP"
+
+		printf "    Маска подсети [${LAN_MASK}]: "
+		read -r NEW_MASK
+		[ -n "$NEW_MASK" ] && LAN_MASK="$NEW_MASK"
+
+		printf "    IP основного роутера [${KEENETIC_IP}]: "
+		read -r NEW_GW
+		[ -n "$NEW_GW" ] && KEENETIC_IP="$NEW_GW"
+
+		echo "    → Настройки: $LAN_IP / $LAN_MASK, роутер $KEENETIC_IP"
+		;;
+	3)
+		echo "    → Оставляю DHCP (IP может меняться)"
+		echo "    [!] ВНИМАНИЕ: Keenetic должен всегда выдавать один и тот же IP!"
+		USE_DHCP=1
+		;;
+	*)
+		echo "    → Оставляю: $LAN_IP / $LAN_MASK, роутер $KEENETIC_IP"
+		;;
+	esac
+}
+
+# ============================================
+#   ВВОД ПОДПИСКИ
+# ============================================
+configure_subscription() {
+	echo ""
+	echo "  [3/3] Настройка подписки"
+	echo "  ─────────────────────────────────────────────"
+
+	if [ -n "$SUB_URL" ]; then
+		echo "    URL подписки: $SUB_URL"
+		return
+	fi
+
+	echo "  Введите URL подписки (или укажите --sub=URL при запуске):"
+	printf "  > "
+	read -r SUB_URL
+
+	while [ -z "$SUB_URL" ]; do
+		echo "  [!] URL обязателен. Введите URL подписки:"
+		printf "  > "
+		read -r SUB_URL
+	done
+
+	echo "    URL: $SUB_URL"
 }
 
 # ============================================
 #   ПАРСЕР АРГУМЕНТОВ
 # ============================================
+ARG_IP=""
+ARG_MASK=""
+ARG_GW=""
 for arg in "$@"; do
 	case $arg in
 	--sub=*) SUB_URL="${arg#*=}" ;;
 	--sub-ua=*) SUB_USER_AGENT="${arg#*=}" ;;
 	--remarks=*) REMARKS_FILTER="${arg#*=}" ;;
-	--ip=*) LAN_IP="${arg#*=}" ;;
-	--mask=*) LAN_MASK="${arg#*=}" ;;
-	--gw=*) KEENETIC_IP="${arg#*=}" ;;
+	--ip=*) ARG_IP="${arg#*=}" ;;
+	--mask=*) ARG_MASK="${arg#*=}" ;;
+	--gw=*) ARG_GW="${arg#*=}" ;;
 	*) echo "[!] Неизвестный аргумент: $arg" ;;
 	esac
 done
-
-# Валидация
-if [ -z "$SUB_URL" ]; then
-	echo "[X] Ошибка: --sub=URL обязателен"
-	exit 1
-fi
 
 # ============================================
 #   ЕДИНАЯ ФУНКЦИЯ ЗАГРУЗКИ
@@ -163,19 +255,33 @@ download_file() {
 mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
 
 # ============================================
-#   1. Автоопределение сети
+#   1. Определение сети + выбор IP + подписка
 # ============================================
-echo "1. Определяем сетевые параметры..."
+echo "=== Шаг 1: Настройка сети и подписки ==="
+
 detect_network
-echo "[+] Сеть определена: $LAN_IF = $LAN_IP, шлюз = $KEENETIC_IP"
+configure_network
+configure_subscription
+
+echo ""
+echo "  Итоговые настройки:"
+echo "    Интерфейс : $LAN_IF"
+if [ "$USE_DHCP" = "1" ]; then
+	echo "    IP адрес  : DHCP (динамический)"
+else
+	echo "    IP адрес  : $LAN_IP / $LAN_MASK (статический)"
+fi
+echo "    Роутер    : $KEENETIC_IP"
+echo "    Подписка  : $SUB_URL"
+echo ""
 
 # ============================================
-#   2. Сохраняем подписку
+#   2. Сохраняем подписку и User-Agent
 # ============================================
-echo "2. Сохраняем подписку..."
+echo "=== Шаг 2: Сохранение подписки ==="
 echo "$SUB_URL" >"$SUB_FILE"
 chmod 600 "$SUB_FILE"
-echo "[+] Подписка сохранена: $SUB_URL"
+echo "[+] Подписка сохранена"
 
 echo "$SUB_USER_AGENT" > "$CONFIG_DIR/sub_user_agent"
 echo "[+] User-Agent: $SUB_USER_AGENT"
@@ -188,26 +294,33 @@ else
 fi
 
 # ============================================
-#   3. Настройка статического IP
+#   3. Настройка IP (статический или DHCP)
 # ============================================
-echo "3. Настраиваем статический IP ($LAN_IP/$LAN_MASK, шлюз $KEENETIC_IP)..."
+echo "=== Шаг 3: Настройка IP-адреса ==="
 
 # Удаляем старые WAN/wan6 интерфейсы (если были с прошлой роли роутера)
 uci -q delete network.wan
 uci -q delete network.wan6
 
-# Настраиваем LAN как статический
-uci set network.lan.proto='static'
-uci set network.lan.ipaddr="$LAN_IP"
-uci set network.lan.netmask="$LAN_MASK"
-uci set network.lan.gateway="$KEENETIC_IP"
-uci set network.lan.ipv6='0'
+if [ "$USE_DHCP" = "1" ]; then
+	# Оставляем DHCP
+	echo "  → Режим DHCP"
+	uci set network.lan.proto='dhcp'
+	uci set network.lan.ipv6='0'
+else
+	# Статический IP
+	echo "  → Статический IP: $LAN_IP / $LAN_MASK, шлюз: $KEENETIC_IP"
+	uci set network.lan.proto='static'
+	uci set network.lan.ipaddr="$LAN_IP"
+	uci set network.lan.netmask="$LAN_MASK"
+	uci set network.lan.gateway="$KEENETIC_IP"
+	uci set network.lan.ipv6='0'
+fi
 
-# Убеждаемся, что LAN привязан к правильному устройству
 uci set network.lan.device="$LAN_IF"
 
 # DNS: dnsmasq форвардит на Xray (127.0.0.1:5353) для собственных нужд шлюза
-# Клиентский DNS перехватывается nftables TProxy (правило 3) и идёт через Xray DoH
+# Клиентский DNS перехватывается nftables TProxy и идёт через Xray DoH
 uci set dhcp.@dnsmasq[0].noresolv='1'
 uci -q delete dhcp.@dnsmasq[0].server
 uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
@@ -226,23 +339,33 @@ echo "  → Применяем настройки сети..."
 /etc/init.d/network reload 2>/dev/null || service network reload 2>/dev/null || true
 sleep 3
 
-# Проверяем, что IP применился
-ACTUAL_IP=$(ip -4 addr show "$LAN_IF" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-if [ "$ACTUAL_IP" != "$LAN_IP" ]; then
-	echo "  [!] IP не совпадает (ожидалось $LAN_IP, получено $ACTUAL_IP)"
-	echo "  → Пробуем принудительно..."
-	ip addr flush dev "$LAN_IF" 2>/dev/null
-	ip addr add "${LAN_IP}/24" dev "$LAN_IF"
-	ip route add default via "$KEENETIC_IP" 2>/dev/null
-	sleep 1
+# Проверяем, что IP применился (только для статического режима)
+if [ "$USE_DHCP" != "1" ]; then
+	ACTUAL_IP=$(ip -4 addr show "$LAN_IF" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+	if [ "$ACTUAL_IP" != "$LAN_IP" ]; then
+		echo "  [!] IP не совпадает (ожидалось $LAN_IP, получено $ACTUAL_IP)"
+		echo "  → Пробуем принудительно..."
+		ip addr flush dev "$LAN_IF" 2>/dev/null
+		ip addr add "${LAN_IP}/24" dev "$LAN_IF"
+		ip route add default via "$KEENETIC_IP" 2>/dev/null
+		sleep 1
+	fi
+	echo "[+] Статический IP настроен: $LAN_IP, шлюз: $KEENETIC_IP"
+else
+	# В DHCP-режиме ждём получения адреса
+	for i in $(seq 1 10); do
+		LAN_IP=$(ip -4 addr show "$LAN_IF" | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+		[ -n "$LAN_IP" ] && break
+		sleep 2
+	done
+	KEENETIC_IP=$(ip route | grep '^default' | awk '{print $3}')
+	echo "[+] DHCP: получен IP $LAN_IP, шлюз: $KEENETIC_IP"
 fi
 
-echo "[+] Статический IP настроен: $LAN_IP, шлюз: $KEENETIC_IP"
-
 # ============================================
-#   4. Настройка DNS (dnsmasq → Xray)
+#   4. DNS (dnsmasq → Xray)
 # ============================================
-echo "4. Настраиваем DNS..."
+echo "=== Шаг 4: DNS ==="
 
 uci set dhcp.@dnsmasq[0].cachesize='1000'
 uci set dhcp.@dnsmasq[0].min_cache_ttl='300'
@@ -255,9 +378,9 @@ uci commit dhcp
 echo "[+] DNS настроен (dnsmasq → 127.0.0.1:5353 → Xray DoH + fallback 77.88.8.8)"
 
 # ============================================
-#   5. Установка Xray из GitHub
+#   5. Установка Xray
 # ============================================
-echo "5. Устанавливаем Xray из GitHub..."
+echo "=== Шаг 5: Установка Xray ==="
 
 # Ждём доступности GitHub API
 for i in $(seq 1 10); do
@@ -350,7 +473,7 @@ fi
 # ============================================
 #   6. Загружаем скрипты из репозитория
 # ============================================
-echo "6. Загружаем скрипты..."
+echo "=== Шаг 6: Загрузка скриптов ==="
 
 download_script() {
 	local url="$1"
@@ -374,7 +497,7 @@ echo "[+] Все скрипты загружены"
 # ============================================
 #   7. Геофайлы + HWID + config.json
 # ============================================
-echo "7. Скачиваем геофайлы, HWID, генерируем config.json..."
+echo "=== Шаг 7: Геофайлы, HWID, config.json ==="
 
 update_geo() {
 	local URL="$1"
@@ -470,7 +593,7 @@ echo "[+] Геофайлы загружены, конфиг сгенериров
 # ============================================
 #   8. Проверяем config.json
 # ============================================
-echo "8. Валидация config.json..."
+echo "=== Шаг 8: Валидация config.json ==="
 if xray run -test -config "$CONFIG_JSON" >/dev/null 2>&1; then
 	echo "  ✓ config.json валиден"
 else
@@ -482,7 +605,7 @@ fi
 # ============================================
 #   9. Создаём init.d для Xray
 # ============================================
-echo "9. Создаём init.d для Xray..."
+echo "=== Шаг 9: Init.d для Xray ==="
 
 cat >/etc/init.d/xray <<'XRAYEOF'
 #!/bin/sh /etc/rc.common
@@ -585,9 +708,9 @@ chmod +x /etc/init.d/xray
 echo "[+] init.d для Xray создан и включён"
 
 # ============================================
-#   10. Настройка routing (policy routing для TProxy)
+#   10. Policy routing для TProxy
 # ============================================
-echo "10. Настраиваем policy routing..."
+echo "=== Шаг 10: Policy routing ==="
 
 if ! grep -q "^100[[:space:]]\+xray$" /etc/iproute2/rt_tables 2>/dev/null; then
 	echo "100 xray" >>/etc/iproute2/rt_tables
@@ -598,7 +721,7 @@ echo "[+] Routing table 100 (xray) добавлена"
 # ============================================
 #   11. Настройка sysctl
 # ============================================
-echo "11. Настраиваем sysctl..."
+echo "=== Шаг 11: Sysctl ==="
 
 sysctl -w net.ipv4.conf.all.route_localnet=1
 sysctl -w net.ipv4.ip_forward=1
@@ -614,7 +737,7 @@ echo "[+] Sysctl настроен (ip_forward + route_localnet)"
 # ============================================
 #   12. Применяем nftables
 # ============================================
-echo "12. Применяем nftables правила..."
+echo "=== Шаг 12: nftables ==="
 "$NFT_UPDATER" || {
 	echo "  [X] Не удалось применить nftables"
 	# Не фатально — Xray применит при запуске
@@ -623,7 +746,7 @@ echo "12. Применяем nftables правила..."
 # ============================================
 #   13. Настройка cron
 # ============================================
-echo "13. Настройка cron..."
+echo "=== Шаг 13: Cron ==="
 
 uci set system.@system[0].cronloglevel='9'
 uci commit system
@@ -639,7 +762,7 @@ fi
 # ============================================
 #   14. Настройка hotplug
 # ============================================
-echo "14. Настройка hotplug..."
+echo "=== Шаг 14: Hotplug ==="
 
 cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 #!/bin/sh
@@ -666,7 +789,7 @@ echo "[+] Hotplug: автообновление при поднятии LAN"
 # ============================================
 #   15. Запуск служб
 # ============================================
-echo "15. Запускаем службы..."
+echo "=== Шаг 15: Запуск служб ==="
 
 service cron restart 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
 service firewall restart 2>/dev/null || /etc/init.d/firewall restart 2>/dev/null || true
@@ -681,7 +804,7 @@ sleep 3
 # ============================================
 #   16. Финальная проверка
 # ============================================
-echo "16. Финальная проверка..."
+echo "=== Шаг 16: Финальная проверка ==="
 
 if pgrep -a xray >/dev/null; then
 	echo "  ✓ Xray запущен"
