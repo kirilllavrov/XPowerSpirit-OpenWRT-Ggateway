@@ -35,6 +35,22 @@ echo ""
 }
 
 # ============================================
+#   TIMEZONE + NTP
+# ============================================
+echo "=== Синхронизация времени ==="
+
+uci set system.@system[0].zonename='Europe/Moscow'
+uci set system.@system[0].timezone='MSK-3'
+uci commit system
+
+ntpd -q -p ru.pool.ntp.org 2>/dev/null ||
+	ntpd -q -p time.google.com 2>/dev/null ||
+	echo " [!] Синхронизация времени не удалась, продолжаем..."
+
+echo "[+] Timezone: Europe/Moscow, время синхронизировано"
+echo ""
+
+# ============================================
 #   ПЕРЕМЕННЫЕ
 # ============================================
 REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit-OpenWRT/main"
@@ -55,7 +71,7 @@ SUB_USER_AGENT="OpenWrt-Xray/1.0"
 LAN_IF=""
 LAN_IP=""
 LAN_MASK="255.255.255.0"
-KEENETIC_IP=""
+GATEWAY_IP=""
 SUB_URL=""
 REMARKS_FILTER=""
 
@@ -90,10 +106,10 @@ detect_network() {
 	[ -z "$LAN_IP" ] && { echo "[X] Не удалось получить IP. Проверьте кабель."; exit 1; }
 
 	# Определяем шлюз по умолчанию
-	KEENETIC_IP=$(ip route | grep '^default' | awk '{print $3}')
-	if [ -z "$KEENETIC_IP" ]; then
+	GATEWAY_IP=$(ip route | grep '^default' | awk '{print $3}')
+	if [ -z "$GATEWAY_IP" ]; then
 		SUBNET=$(echo "$LAN_IP" | cut -d'.' -f1-3)
-		KEENETIC_IP="${SUBNET}.1"
+		GATEWAY_IP="${SUBNET}.1"
 	fi
 }
 
@@ -108,16 +124,16 @@ configure_network() {
 	echo "    Интерфейс : $LAN_IF"
 	echo "    Текущий IP: $LAN_IP"
 	echo "    Маска     : $LAN_MASK"
-	echo "    Роутер    : $KEENETIC_IP"
+	echo "    Роутер    : $GATEWAY_IP"
 	echo ""
 
 	# Если все параметры уже заданы через аргументы — не спрашиваем
 	if [ -n "$ARG_IP" ] && [ -n "$ARG_GW" ]; then
 		LAN_IP="$ARG_IP"
-		KEENETIC_IP="$ARG_GW"
+		GATEWAY_IP="$ARG_GW"
 		[ -n "$ARG_MASK" ] && LAN_MASK="$ARG_MASK"
 		echo "    → Использую параметры командной строки"
-		echo "    IP: $LAN_IP, маска: $LAN_MASK, роутер: $KEENETIC_IP"
+		echo "    IP: $LAN_IP, маска: $LAN_MASK, роутер: $GATEWAY_IP"
 		return
 	fi
 
@@ -125,9 +141,9 @@ configure_network() {
 	if [ -n "$ARG_IP" ]; then
 		LAN_IP="$ARG_IP"
 		[ -n "$ARG_MASK" ] && LAN_MASK="$ARG_MASK"
-		[ -n "$ARG_GW" ] && KEENETIC_IP="$ARG_GW"
+		[ -n "$ARG_GW" ] && GATEWAY_IP="$ARG_GW"
 		echo "    → IP задан аргументом: $LAN_IP"
-		echo "    Роутер (авто): $KEENETIC_IP"
+		echo "    Роутер (авто): $GATEWAY_IP"
 	fi
 
 	echo "  Выберите действие:"
@@ -141,7 +157,7 @@ configure_network() {
 
 	case "$CHOICE" in
 	1)
-		echo "    → Оставляю: $LAN_IP / $LAN_MASK, роутер $KEENETIC_IP"
+		echo "    → Оставляю: $LAN_IP / $LAN_MASK, роутер $GATEWAY_IP"
 		;;
 	2)
 		echo ""
@@ -153,11 +169,11 @@ configure_network() {
 		read -r NEW_MASK
 		[ -n "$NEW_MASK" ] && LAN_MASK="$NEW_MASK"
 
-		printf "    IP основного роутера [${KEENETIC_IP}]: "
+		printf "    IP основного роутера [${GATEWAY_IP}]: "
 		read -r NEW_GW
-		[ -n "$NEW_GW" ] && KEENETIC_IP="$NEW_GW"
+		[ -n "$NEW_GW" ] && GATEWAY_IP="$NEW_GW"
 
-		echo "    → Настройки: $LAN_IP / $LAN_MASK, роутер $KEENETIC_IP"
+		echo "    → Настройки: $LAN_IP / $LAN_MASK, роутер $GATEWAY_IP"
 		;;
 	3)
 		echo "    → Оставляю DHCP (IP может меняться)"
@@ -165,7 +181,7 @@ configure_network() {
 		USE_DHCP=1
 		;;
 	*)
-		echo "    → Оставляю: $LAN_IP / $LAN_MASK, роутер $KEENETIC_IP"
+		echo "    → Оставляю: $LAN_IP / $LAN_MASK, роутер $GATEWAY_IP"
 		;;
 	esac
 }
@@ -271,7 +287,7 @@ if [ "$USE_DHCP" = "1" ]; then
 else
 	echo "    IP адрес  : $LAN_IP / $LAN_MASK (статический)"
 fi
-echo "    Роутер    : $KEENETIC_IP"
+echo "    Роутер    : $GATEWAY_IP"
 echo "    Подписка  : $SUB_URL"
 echo ""
 
@@ -309,22 +325,19 @@ if [ "$USE_DHCP" = "1" ]; then
 	uci set network.lan.ipv6='0'
 else
 	# Статический IP
-	echo "  → Статический IP: $LAN_IP / $LAN_MASK, шлюз: $KEENETIC_IP"
+	echo "  → Статический IP: $LAN_IP / $LAN_MASK, шлюз: $GATEWAY_IP"
 	uci set network.lan.proto='static'
 	uci set network.lan.ipaddr="$LAN_IP"
 	uci set network.lan.netmask="$LAN_MASK"
-	uci set network.lan.gateway="$KEENETIC_IP"
+	uci set network.lan.gateway="$GATEWAY_IP"
 	uci set network.lan.ipv6='0'
 fi
 
 uci set network.lan.device="$LAN_IF"
 
-# DNS: dnsmasq форвардит на Xray (127.0.0.1:5353) для собственных нужд шлюза
+# DNS для собственных нужд шлюза — через Cloudflare напрямую
 # Клиентский DNS перехватывается nftables TProxy и идёт через Xray DoH
-uci set dhcp.@dnsmasq[0].noresolv='1'
-uci -q delete dhcp.@dnsmasq[0].server
-uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
-uci add_list dhcp.@dnsmasq[0].server='77.88.8.8'
+uci set network.lan.dns='1.0.0.1'
 
 # Отключаем DHCP-сервер (Keenetic раздаёт адреса)
 uci set dhcp.lan.ignore='1'
@@ -333,6 +346,12 @@ uci set dhcp.lan.ra='disabled'
 
 uci commit network
 uci commit dhcp
+
+# Отключаем dnsmasq и odhcpd — они не нужны (нет DHCP, DNS через TProxy + network.lan.dns)
+service odhcpd stop 2>/dev/null || true
+service odhcpd disable 2>/dev/null || true
+service dnsmasq stop 2>/dev/null || true
+service dnsmasq disable 2>/dev/null || true
 
 # Применяем сетевые изменения
 echo "  → Применяем настройки сети..."
@@ -347,10 +366,10 @@ if [ "$USE_DHCP" != "1" ]; then
 		echo "  → Пробуем принудительно..."
 		ip addr flush dev "$LAN_IF" 2>/dev/null
 		ip addr add "${LAN_IP}/24" dev "$LAN_IF"
-		ip route add default via "$KEENETIC_IP" 2>/dev/null
+		ip route add default via "$GATEWAY_IP" 2>/dev/null
 		sleep 1
 	fi
-	echo "[+] Статический IP настроен: $LAN_IP, шлюз: $KEENETIC_IP"
+	echo "[+] Статический IP настроен: $LAN_IP, шлюз: $GATEWAY_IP"
 else
 	# В DHCP-режиме ждём получения адреса
 	for i in $(seq 1 10); do
@@ -358,29 +377,14 @@ else
 		[ -n "$LAN_IP" ] && break
 		sleep 2
 	done
-	KEENETIC_IP=$(ip route | grep '^default' | awk '{print $3}')
-	echo "[+] DHCP: получен IP $LAN_IP, шлюз: $KEENETIC_IP"
+	GATEWAY_IP=$(ip route | grep '^default' | awk '{print $3}')
+	echo "[+] DHCP: получен IP $LAN_IP, шлюз: $GATEWAY_IP"
 fi
 
 # ============================================
-#   4. DNS (dnsmasq → Xray)
+#   4. Установка Xray
 # ============================================
-echo "=== Шаг 4: DNS ==="
-
-uci set dhcp.@dnsmasq[0].cachesize='1000'
-uci set dhcp.@dnsmasq[0].min_cache_ttl='300'
-uci set dhcp.@dnsmasq[0].max_cache_ttl='1800'
-uci commit dhcp
-
-# Перезапускаем dnsmasq (без DHCP, только DNS forwarder)
-/etc/init.d/dnsmasq restart 2>/dev/null || service dnsmasq restart 2>/dev/null || true
-
-echo "[+] DNS настроен (dnsmasq → 127.0.0.1:5353 → Xray DoH + fallback 77.88.8.8)"
-
-# ============================================
-#   5. Установка Xray
-# ============================================
-echo "=== Шаг 5: Установка Xray ==="
+echo "=== Шаг 4: Установка Xray ==="
 
 # Ждём доступности GitHub API
 for i in $(seq 1 10); do
@@ -471,9 +475,9 @@ else
 fi
 
 # ============================================
-#   6. Загружаем скрипты из репозитория
+#   5. Загружаем скрипты из репозитория
 # ============================================
-echo "=== Шаг 6: Загрузка скриптов ==="
+echo "=== Шаг 5: Загрузка скриптов ==="
 
 download_script() {
 	local url="$1"
@@ -495,9 +499,9 @@ download_script "$REPO/update-nft.sh" "$NFT_UPDATER"
 echo "[+] Все скрипты загружены"
 
 # ============================================
-#   7. Геофайлы + HWID + config.json
+#   6. Геофайлы + HWID + config.json
 # ============================================
-echo "=== Шаг 7: Геофайлы, HWID, config.json ==="
+echo "=== Шаг 6: Геофайлы, HWID, config.json ==="
 
 update_geo() {
 	local URL="$1"
@@ -591,9 +595,9 @@ fi
 echo "[+] Геофайлы загружены, конфиг сгенерирован"
 
 # ============================================
-#   8. Проверяем config.json
+#   7. Проверяем config.json
 # ============================================
-echo "=== Шаг 8: Валидация config.json ==="
+echo "=== Шаг 7: Валидация config.json ==="
 if xray run -test -config "$CONFIG_JSON" >/dev/null 2>&1; then
 	echo "  ✓ config.json валиден"
 else
@@ -603,9 +607,9 @@ else
 fi
 
 # ============================================
-#   9. Создаём init.d для Xray
+#   8. Создаём init.d для Xray
 # ============================================
-echo "=== Шаг 9: Init.d для Xray ==="
+echo "=== Шаг 8: Init.d для Xray ==="
 
 cat >/etc/init.d/xray <<'XRAYEOF'
 #!/bin/sh /etc/rc.common
@@ -708,9 +712,9 @@ chmod +x /etc/init.d/xray
 echo "[+] init.d для Xray создан и включён"
 
 # ============================================
-#   10. Policy routing для TProxy
+#   9. Policy routing для TProxy
 # ============================================
-echo "=== Шаг 10: Policy routing ==="
+echo "=== Шаг 9: Policy routing ==="
 
 if ! grep -q "^100[[:space:]]\+xray$" /etc/iproute2/rt_tables 2>/dev/null; then
 	echo "100 xray" >>/etc/iproute2/rt_tables
@@ -719,9 +723,9 @@ fi
 echo "[+] Routing table 100 (xray) добавлена"
 
 # ============================================
-#   11. Настройка sysctl
+#   10. Настройка sysctl
 # ============================================
-echo "=== Шаг 11: Sysctl ==="
+echo "=== Шаг 10: Sysctl ==="
 
 sysctl -w net.ipv4.conf.all.route_localnet=1
 sysctl -w net.ipv4.ip_forward=1
@@ -735,18 +739,18 @@ sysctl -p /etc/sysctl.d/99-xray.conf >/dev/null 2>&1
 echo "[+] Sysctl настроен (ip_forward + route_localnet)"
 
 # ============================================
-#   12. Применяем nftables
+#   11. Применяем nftables
 # ============================================
-echo "=== Шаг 12: nftables ==="
+echo "=== Шаг 11: nftables ==="
 "$NFT_UPDATER" || {
 	echo "  [X] Не удалось применить nftables"
 	# Не фатально — Xray применит при запуске
 }
 
 # ============================================
-#   13. Настройка cron
+#   12. Настройка cron
 # ============================================
-echo "=== Шаг 13: Cron ==="
+echo "=== Шаг 12: Cron ==="
 
 uci set system.@system[0].cronloglevel='9'
 uci commit system
@@ -760,9 +764,9 @@ else
 fi
 
 # ============================================
-#   14. Настройка hotplug
+#   13. Настройка hotplug
 # ============================================
-echo "=== Шаг 14: Hotplug ==="
+echo "=== Шаг 13: Hotplug ==="
 
 cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 #!/bin/sh
@@ -787,9 +791,9 @@ chmod +x /etc/hotplug.d/iface/99-xray-autoupdate
 echo "[+] Hotplug: автообновление при поднятии LAN"
 
 # ============================================
-#   15. Запуск служб
+#   14. Запуск служб
 # ============================================
-echo "=== Шаг 15: Запуск служб ==="
+echo "=== Шаг 14: Запуск служб ==="
 
 service cron restart 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
 service firewall restart 2>/dev/null || /etc/init.d/firewall restart 2>/dev/null || true
@@ -798,13 +802,10 @@ sleep 2
 /etc/init.d/xray start
 sleep 3
 
-# Перезапускаем dnsmasq (чтобы подхватил настройки после Xray)
-/etc/init.d/dnsmasq restart 2>/dev/null || service dnsmasq restart 2>/dev/null || true
-
 # ============================================
-#   16. Финальная проверка
+#   15. Финальная проверка
 # ============================================
-echo "=== Шаг 16: Финальная проверка ==="
+echo "=== Шаг 15: Финальная проверка ==="
 
 if pgrep -a xray >/dev/null; then
 	echo "  ✓ Xray запущен"
@@ -818,7 +819,7 @@ echo "============================================"
 echo "  Установка завершена!"
 echo ""
 echo "  Xray-шлюз: $LAN_IP"
-echo "  Основной роутер (Keenetic): $KEENETIC_IP"
+echo "  Основной роутер (Keenetic): $GATEWAY_IP"
 echo ""
 echo "  Настройте Keenetic DHCP:"
 echo "    Шлюз для клиентов: $LAN_IP"
