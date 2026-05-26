@@ -68,18 +68,24 @@ mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
 #   ЕДИНАЯ ФУНКЦИЯ ЗАГРУЗКИ
 # =============================================
 
-# Универсальная загрузка файла (только url + путь)
+# Универсальная загрузка файла
+#   download_file "URL" "DEST" ["HEADER1" "HEADER2" "HEADER3"]
 download_file() {
     url="$1"
     dst="$2"
+    shift 2
     max_retries=3
     retry=1
 
-    while [ "$retry" -le "$max_retries" ]; do
-        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 -o "$dst" "$url"
+    while [ $retry -le $max_retries ]; do
+        curl -s -L -H "User-Agent: $SUB_USER_AGENT" --max-time 15 \
+            ${1:+-H "$1"} \
+            ${2:+-H "$2"} \
+            ${3:+-H "$3"} \
+            -o "$dst" "$url"
         rc=$?
 
-        if [ "$rc" -eq 0 ] && [ -s "$dst" ]; then
+        if [ $rc -eq 0 ] && [ -s "$dst" ]; then
             if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
                 rm -f "$dst"
             else
@@ -87,7 +93,7 @@ download_file() {
             fi
         fi
 
-        if [ "$retry" -lt "$max_retries" ]; then
+        if [ $retry -lt $max_retries ]; then
             sleep 2
         fi
         retry=$((retry + 1))
@@ -458,24 +464,9 @@ echo "  ✓ HWID сохранён: $HWID"
 
 echo "  → Генерируем config.json из подписки (User-Agent: $SUB_USER_AGENT)..."
 
-# Скачиваем подписку с заголовками (curl напрямую, чтобы избежать word splitting в download_file)
+# Скачиваем подписку с заголовками
 SUB_TMP="/tmp/sub_raw.txt"
-SUB_RETRY=3
-SUB_OK=0
-while [ "$SUB_RETRY" -gt 0 ] && [ "$SUB_OK" -eq 0 ]; do
-    curl -s -L --max-time 15 \
-        -H "User-Agent: $SUB_USER_AGENT" \
-        -H "x-hwid: $HWID" \
-        -o "$SUB_TMP" "$SUB_URL"
-    if [ $? -eq 0 ] && [ -s "$SUB_TMP" ] && ! head -n 1 "$SUB_TMP" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
-        SUB_OK=1
-    else
-        rm -f "$SUB_TMP"
-        SUB_RETRY=$((SUB_RETRY - 1))
-        [ "$SUB_RETRY" -gt 0 ] && sleep 2
-    fi
-done
-if [ "$SUB_OK" -eq 1 ]; then
+if download_file "$SUB_URL" "$SUB_TMP" "User-Agent: $SUB_USER_AGENT" "x-hwid: $HWID"; then
     
     # Проверяем, что скачалось не HTML
     if head -n 1 "/tmp/sub_raw.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then

@@ -23,15 +23,21 @@ die() {
     exit 1
 }
 
-# Единая функция загрузки (curl)
-fetch_url() {
+# Единая функция загрузки
+#   download_file "URL" "DEST" ["HEADER1" "HEADER2" "HEADER3"]
+download_file() {
     local url="$1"
     local dst="$2"
+    shift 2
     local max_retries=2
     local retry=1
 
     while [ $retry -le $max_retries ]; do
-        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 -o "$dst" "$url"
+        curl -s -L -H "User-Agent: $SUB_USER_AGENT" --max-time 15 \
+            ${1:+-H "$1"} \
+            ${2:+-H "$2"} \
+            ${3:+-H "$3"} \
+            -o "$dst" "$url"
         local rc=$?
 
         if [ $rc -eq 0 ] && [ -s "$dst" ]; then
@@ -172,7 +178,7 @@ else
     ZIP_DEST="$TMP_DIR/xray.zip"
     SHA_FILE="$STATE_DIR/xray.zip.sha256sum"
 
-    if fetch_url "${ZIP_URL}.dgst" "$STATE_DIR/xray.dgst"; then
+    if download_file "${ZIP_URL}.dgst" "$STATE_DIR/xray.dgst"; then
         REMOTE_SHA=$(extract_sha256 "$STATE_DIR/xray.dgst")
 
         if [ -n "$REMOTE_SHA" ]; then
@@ -183,7 +189,7 @@ else
                 echo "✓ Xray ZIP не изменился" >>"$LOG"
             else
                 echo "→ Скачиваем Xray ZIP..." >>"$LOG"
-                if fetch_url "$ZIP_URL" "$ZIP_DEST"; then
+                if download_file "$ZIP_URL" "$ZIP_DEST"; then
                     LOCAL_SHA=$(sha256sum "$ZIP_DEST" | awk '{print $1}')
                     if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
                         echo "$REMOTE_SHA" >"$SHA_FILE"
@@ -227,7 +233,7 @@ update_geo() {
     echo "→ Обновление $BASE..." >>"$LOG"
 
     # Скачиваем SHA256
-    if ! fetch_url "${URL}.sha256sum" "$TMP_SHA"; then
+    if ! download_file "${URL}.sha256sum" "$TMP_SHA"; then
         echo "[!] Не удалось скачать sha256sum для $BASE — пропускаем" >>"$LOG"
         return 1
     fi
@@ -245,7 +251,7 @@ update_geo() {
     fi
 
     # Скачиваем сам файл
-    if ! fetch_url "$URL" "$TMP_DEST"; then
+    if ! download_file "$URL" "$TMP_DEST"; then
         echo "[!] Не удалось скачать $BASE — пропускаем" >>"$LOG"
         return 1
     fi
@@ -274,7 +280,7 @@ update_geo "$GEOSITE_URL" "$GEOSITE"
 echo "→ Генерация config.json (User-Agent: $SUB_USER_AGENT)..." >>"$LOG"
 
 # Скачиваем подписку
-if curl -s -L -H "User-Agent: $SUB_USER_AGENT" -H "x-hwid: $HWID" "$SUB_URL" -o "$TMP_DIR/sub.txt"; then
+if download_file "$SUB_URL" "$TMP_DIR/sub.txt" "User-Agent: $SUB_USER_AGENT" "x-hwid: $HWID"; then
     
     # Проверяем, что скачалось не HTML
     if head -n 1 "$TMP_DIR/sub.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
