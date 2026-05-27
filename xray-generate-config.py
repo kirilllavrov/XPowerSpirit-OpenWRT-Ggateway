@@ -329,6 +329,15 @@ def base_config() -> dict:
                     "destOverride": ["http", "tls"],
                     "routeOnly": True
                 }
+            },
+                        {
+                "tag": "dns-in",
+                "listen": 192.168.1.120,
+                "port": 53,
+                "protocol": "dokodemo-door",
+                "settings": {
+                    "network": "udp"
+                }
             }
         ]
     }
