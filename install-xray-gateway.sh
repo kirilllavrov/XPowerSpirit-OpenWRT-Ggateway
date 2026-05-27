@@ -624,7 +624,7 @@ cat >/etc/init.d/xray <<'XRAYEOF'
 #!/bin/sh /etc/rc.common
 
 USE_PROCD=1
-START=99
+START=85
 STOP=10
 
 CONF="/etc/xray/config.json"
@@ -782,18 +782,16 @@ cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "lan" ] || exit 0
 
+# Ждём чтобы boot завершился и Xray точно был запущен через init.d
+sleep 120
+
+# Если Xray не запущен — не трогаем, init.d сам разберётся
 if ! pidof xray >/dev/null; then
-    /etc/init.d/xray start
-    sleep 5
+    exit 0
 fi
 
-for i in 1 2 3 4 5 6 7; do
-    sleep 5
-    if curl -fs --max-time 3 https://www.google.com/gen_204 >/dev/null; then
-        /usr/share/xray/update-xray.sh &
-        exit 0
-    fi
-done
+# Запускаем обновление в фоне (не стартуем Xray — это делает init.d)
+/usr/share/xray/update-xray.sh &
 EOF
 
 chmod +x /etc/hotplug.d/iface/99-xray-autoupdate
