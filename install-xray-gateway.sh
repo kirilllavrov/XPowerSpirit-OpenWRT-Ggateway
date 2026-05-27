@@ -349,8 +349,9 @@ fi
 
 uci set network.lan.device="$LAN_IF"
 
-# DNS для собственных нужд шлюза — через Cloudflare напрямую
-# Клиентский DNS перехватывается nftables TProxy и идёт через Xray DoH
+# DNS для шлюза — внешний, не зависит от Xray.
+# Клиентский DNS перехватывается nftables TProxy и идёт через Xray DoH.
+# Xray dns-in на 127.0.0.1:53 доступен для явных запросов.
 uci set network.lan.dns='1.0.0.1'
 
 # Отключаем DHCP-сервер (Keenetic раздаёт адреса)
@@ -358,7 +359,7 @@ uci set dhcp.lan.ignore='1'
 uci set dhcp.lan.dhcpv6='disabled'
 uci set dhcp.lan.ra='disabled'
 
-# Отключаем dnsmasq и odhcpd — они не нужны (нет DHCP, DNS через TProxy + network.lan.dns)
+# Отключаем dnsmasq и odhcpd — они не нужны (нет DHCP, DNS через TProxy + Xray dns-in)
 service odhcpd stop 2>/dev/null || true
 service odhcpd disable 2>/dev/null || true
 service dnsmasq stop 2>/dev/null || true
