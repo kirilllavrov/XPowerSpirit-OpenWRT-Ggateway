@@ -251,8 +251,16 @@ download_file() {
 	local max_retries=3
 	local retry=1
 
+	# Добавляем cache-buster к URL (GitHub CDN кеширует raw-файлы)
+	local cache_buster="_t=$(date +%s)_r=$RANDOM"
+	case "$url" in
+	*raw.githubusercontent.com*) url="${url}?${cache_buster}" ;;
+	esac
+
 	while [ $retry -le $max_retries ]; do
 		curl -s -L --max-time 15 \
+			-H "Cache-Control: no-cache, no-store" \
+			-H "Pragma: no-cache" \
 			${1:+-H "$1"} \
 			${2:+-H "$2"} \
 			${3:+-H "$3"} \

@@ -24,15 +24,22 @@ die() {
     exit 1
 }
 
-# Единая функция загрузки (curl)
+# Единая функция загрузки (curl) — с обходом кеша GitHub
 fetch_url() {
     local url="$1"
     local dst="$2"
     local max_retries=2
     local retry=1
 
+    # Cache-buster для raw.githubusercontent.com
+    case "$url" in
+    *raw.githubusercontent.com*) url="${url}?_t=$(date +%s)" ;;
+    esac
+
     while [ $retry -le $max_retries ]; do
-        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 -o "$dst" "$url"
+        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 \
+            -H "Cache-Control: no-cache, no-store" \
+            -o "$dst" "$url"
         local rc=$?
 
         if [ $rc -eq 0 ] && [ -s "$dst" ]; then
@@ -64,6 +71,8 @@ TMP_DIR="/tmp/xray_update"
 
 GENERATOR="/usr/share/xray/xray-generate-config.py"
 PARSER="/usr/share/xray/xray-sub-parser.py"
+NFT_UPDATER="/usr/share/xray/update-nft.sh"
+REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit-OpenWRT/main"
 
 GEO_DIR="/usr/share/xray"
 GEOIP="$GEO_DIR/geoip.dat"
@@ -263,6 +272,12 @@ update_geo "$GEOSITE_URL" "$GEOSITE"
 # ============================
 #   Генерация config.json (поддерживает оба формата)
 # ============================
+
+echo "→ Обновление скриптов..." >>"$LOG"
+for scr in xray-generate-config.py xray-sub-parser.py update-nft.sh; do
+    fetch_url "$REPO/$scr" "/tmp/${scr}" && mv "/tmp/${scr}" "/usr/share/xray/${scr}" && chmod +x "/usr/share/xray/${scr}" 2>/dev/null
+done
+echo "→ Скрипты обновлены" >>"$LOG"
 
 echo "→ Генерация config.json (User-Agent: $SUB_USER_AGENT)..." >>"$LOG"
 
