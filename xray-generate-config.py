@@ -365,7 +365,7 @@ def build_direct_config() -> dict:
         }
     ]
     cfg["routing"] = {
-        "domainStrategy": "IPIfNonMatch",
+        "domainStrategy": "IPOnDemand",
         "rules": [
             {
                 "type": "field",
@@ -538,12 +538,10 @@ def build_rules(proxy_outbounds: list, direct_mode: bool = False) -> list:
 
 def build_balancer(proxy_outbounds: list) -> dict:
     """
-    Создаёт конфигурацию балансировщика для нескольких прокси (leastLoad).
-    
+    Создаёт конфигурацию балансировщика для нескольких прокси (leastLoad).    
     leastLoad выбирает наиболее стабильные серверы на основе данных burstObservatory:
-      - expected=3: трафик распределяется между тремя лучшими серверами (отказоустойчивость)
-      - maxRTT=600ms: серверы с пингом >600ms исключаются (даже если формально живы)
-      - baselines=[200ms]: серверы с разбросом задержки >200ms исключаются (джиттер)
+      - maxRTT=800ms: серверы с пингом >800ms исключаются (даже если формально живы)
+
     
     Если все серверы не проходят — fallback на direct.
     """
@@ -554,9 +552,7 @@ def build_balancer(proxy_outbounds: list) -> dict:
         "strategy": {
             "type": "leastLoad",
             "settings": {
-                "expected": 2,
                 "maxRTT": "800ms",
-                "baselines": ["200ms"]
             }
         },
         "fallbackTag": "direct"
@@ -656,7 +652,7 @@ def main():
         if len(proxy_outbounds) > 1:
             cfg.update(build_burst_observatory(proxy_outbounds))
         
-        routing = {"domainStrategy": "IPIfNonMatch", "rules": build_rules(proxy_outbounds)}
+        routing = {"domainStrategy": "IPOnDemand", "rules": build_rules(proxy_outbounds)}
         
         if len(proxy_outbounds) > 1:
             routing["balancers"] = [build_balancer(proxy_outbounds)]
@@ -732,7 +728,7 @@ def main():
         # Используем burstObservatory (для стратегии leastLoad)
         cfg.update(build_burst_observatory(proxy_outbounds))
         
-        routing = {"domainStrategy": "IPIfNonMatch", "rules": build_rules(proxy_outbounds)}
+        routing = {"domainStrategy": "IPOnDemand", "rules": build_rules(proxy_outbounds)}
         
         if len(proxy_outbounds) > 1:
             routing["balancers"] = [build_balancer(proxy_outbounds)]
@@ -760,7 +756,7 @@ def main():
                 build_dns_outbound()
             ]
             cfg["routing"] = {
-                "domainStrategy": "IPIfNonMatch",
+                "domainStrategy": "IPOnDemand",
                 "rules": build_rules([], direct_mode=True)
             }
             print("[!] Найден сервер 'hole'. Включён DIRECT-конфиг.", file=sys.stderr)
@@ -775,7 +771,7 @@ def main():
                     build_dns_outbound()
                 ]
                 cfg["routing"] = {
-                    "domainStrategy": "IPIfNonMatch",
+                    "domainStrategy": "IPOnDemand",
                     "rules": build_rules([], direct_mode=True)
                 }
                 print("[!] Нет доступных серверов (только заглушки). Создан DIRECT-конфиг.", file=sys.stderr)
@@ -817,7 +813,7 @@ def main():
                     build_dns_outbound()
                 ]
                 cfg["routing"] = {
-                    "domainStrategy": "IPIfNonMatch",
+                    "domainStrategy": "IPOnDemand",
                     "rules": build_rules([chosen])
                 }
                 print(f"  ✓ Выбран сервер: {chosen_tag}", file=sys.stderr)
