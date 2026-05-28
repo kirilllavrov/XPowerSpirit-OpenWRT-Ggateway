@@ -1,6 +1,6 @@
 #!/bin/sh
 # OpenWrt — nftables правила для Xray Transparent Gateway
-#
+#29
 # Режим: прозрачный шлюз (не основной роутер)
 # Только клиентский трафик с LAN проксируется через Xray TProxy.
 
