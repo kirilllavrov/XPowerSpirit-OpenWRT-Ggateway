@@ -689,24 +689,9 @@ start_service() {
     procd_set_param file "$CONF"
     procd_close_instance
 
-    # procd запускает сервис асинхронно — ждём до 5 секунд
-    for i in $(seq 1 10); do
-        sleep 1
-        if pidof xray >/dev/null 2>&1; then
-            logger -t xray "Xray started successfully (transparent gateway mode)"
-            return 0
-        fi
-    done
-
-    # Не стартанул даже через 5 секунд — чистимся
-    logger -t xray "Xray failed to start — cleaning nftables"
-    nft flush chain inet fw4 xray_tproxy 2>/dev/null
-    nft delete chain inet fw4 xray_tproxy 2>/dev/null
-    nft flush chain inet fw4 xray_output 2>/dev/null
-    nft delete chain inet fw4 xray_output 2>/dev/null
-    while ip rule del fwmark 1 table 100 2>/dev/null; do :; done
-    ip route flush table 100 2>/dev/null
-    return 1
+    # procd запустит xray после возврата из start_service().
+    # Конфиг уже проверен xray run -test. При падении — respawn 3600 5 5.
+    logger -t xray "Xray registered with procd (transparent gateway mode)"
 }
 
 stop_service() {
