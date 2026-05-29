@@ -508,6 +508,9 @@ download_script "$REPO/update-nft.sh" "$NFT_UPDATER"
 
 echo "[+] Все скрипты загружены"
 
+# Сохраняем IP шлюза — генератору нужен для dns-in inbound
+echo "$LAN_IP" > "$CONFIG_DIR/gateway_ip"
+
 # Сохраняем приоритетный домен в файл (генератор читает его при каждом запуске)
 if [ -n "$DWL_DOMAIN" ]; then
 	echo "$DWL_DOMAIN" > "$CONFIG_DIR/dwl_domain"
@@ -648,6 +651,9 @@ start_service() {
         logger -t xray "Waiting for network... ($i)"
         sleep 2
     done
+
+    # Сохраняем IP шлюза (нужен генератору для dns-in)
+    ip -4 addr show br-lan 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 > /etc/xray/gateway_ip 2>/dev/null || true
 
     # Синхронизация времени (важно для TLS/REALITY)
     ntpd -q -p ru.pool.ntp.org 2>/dev/null || \

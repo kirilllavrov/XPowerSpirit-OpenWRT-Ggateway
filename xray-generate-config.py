@@ -42,6 +42,29 @@ def _load_domain_whitelist() -> list:
 DOMAIN_WHITELIST = _load_domain_whitelist()
 
 
+def _get_gateway_ip() -> str:
+    """Возвращает IP шлюза из /etc/xray/gateway_ip или автоопределяет"""
+    try:
+        with open("/etc/xray/gateway_ip", "r") as f:
+            ip = f.read().strip()
+            if ip:
+                return ip
+    except FileNotFoundError:
+        pass
+    # Автоопределение: первый не-loopback IP
+    import subprocess
+    try:
+        out = subprocess.check_output(["ip", "-4", "addr", "show", "br-lan"], text=True)
+        for line in out.splitlines():
+            if "inet " in line:
+                return line.strip().split()[1].split("/")[0]
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+GATEWAY_IP = _get_gateway_ip()
+
+
 # ============================================
 #   ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
@@ -329,6 +352,15 @@ def base_config() -> dict:
                     "destOverride": ["http", "tls"],
                     "routeOnly": True
                 }
+            },
+            {
+                "tag": "dns-in",
+                "listen": GATEWAY_IP,
+                "port": 53,
+                "protocol": "dokodemo-door",
+                "settings": {
+                    "network": "udp"
+                }
             }
         ]
     }
@@ -356,6 +388,11 @@ def build_direct_config() -> dict:
     cfg["routing"] = {
         "domainStrategy": "IPOnDemand",
         "rules": [
+            {
+                "type": "field",
+                "inboundTag": ["dns-in"],
+                "outboundTag": "dns-out"
+            },
             {
                 "type": "field",
                 "inboundTag": ["tproxy-in"],
@@ -428,6 +465,12 @@ def build_rules(proxy_outbounds: list, direct_mode: bool = False) -> list:
     Если один прокси, использует прямой outboundTag.
     """
     rules = [
+        # DNS inbound (принимает на IP шлюза:53) → dns-out (hijack → dns-inbuilt)
+        {
+            "type": "field",
+            "inboundTag": ["dns-in"],
+            "outboundTag": "dns-out"
+        },
         # Клиентский DNS (порт 53 через TProxy) → dns-out (hijack → dns-inbuilt)
         {
             "type": "field",
