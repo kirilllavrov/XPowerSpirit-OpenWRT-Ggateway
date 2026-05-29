@@ -72,7 +72,7 @@ TMP_DIR="/tmp/xray_update"
 GENERATOR="/usr/share/xray/xray-generate-config.py"
 PARSER="/usr/share/xray/xray-sub-parser.py"
 NFT_UPDATER="/usr/share/xray/update-nft.sh"
-REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit-OpenWRT/main"
+REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit-OpenWRT-Ggateway/main"
 
 GEO_DIR="/usr/share/xray"
 GEOIP="$GEO_DIR/geoip.dat"
