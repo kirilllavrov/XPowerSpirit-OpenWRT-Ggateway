@@ -329,15 +329,6 @@ def base_config() -> dict:
                     "destOverride": ["http", "tls"],
                     "routeOnly": True
                 }
-            },
-            {
-                "tag": "dns-in",
-                "listen": "127.0.0.1",
-                "port": 53,
-                "protocol": "dokodemo-door",
-                "settings": {
-                    "network": "udp"
-                }
             }
         ]
     }
@@ -365,11 +356,6 @@ def build_direct_config() -> dict:
     cfg["routing"] = {
         "domainStrategy": "IPOnDemand",
         "rules": [
-            {
-                "type": "field",
-                "inboundTag": ["dns-in"],
-                "outboundTag": "dns-out"
-            },
             {
                 "type": "field",
                 "inboundTag": ["tproxy-in"],
@@ -442,12 +428,6 @@ def build_rules(proxy_outbounds: list, direct_mode: bool = False) -> list:
     Если один прокси, использует прямой outboundTag.
     """
     rules = [
-        # DNS самого шлюза (127.0.0.1:53) → dns-out (hijack → dns-inbuilt)
-        {
-            "type": "field",
-            "inboundTag": ["dns-in"],
-            "outboundTag": "dns-out"
-        },
         # Клиентский DNS (порт 53 через TProxy) → dns-out (hijack → dns-inbuilt)
         {
             "type": "field",
