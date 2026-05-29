@@ -691,7 +691,7 @@ start_service() {
 
     # procd запускает сервис асинхронно — ждём до 5 секунд
     for i in $(seq 1 10); do
-        sleep 0.5
+        sleep 1
         if pidof xray >/dev/null 2>&1; then
             logger -t xray "Xray started successfully (transparent gateway mode)"
             return 0
