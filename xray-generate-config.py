@@ -563,11 +563,11 @@ def build_burst_observatory(proxy_outbounds: list) -> dict:
         "burstObservatory": {
             "subjectSelector": subject_selector,
             "pingConfig": {
-                "destination": "https://www.google.com/generate_204",
+                "destination": "http://connectivitycheck.gstatic.com/generate_204",
                 "interval": "1m",
                 "sampling": 10,
-                "timeout": "5s",
-                "httpMethod": "HEAD"
+                "timeout": "15s",
+                "httpMethod": "GET"
             }
         }
     }
