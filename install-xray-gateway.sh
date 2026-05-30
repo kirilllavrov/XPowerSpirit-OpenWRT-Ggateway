@@ -370,15 +370,15 @@ uci set dhcp.lan.ra='disabled'
 # Принимает запросы клиентов на :53, форвардит в Xray dns-in на :5353
 uci set dhcp.@dnsmasq[0].noresolv='1'
 uci set dhcp.@dnsmasq[0].strictorder='1'
+uci set dhcp.@dnsmasq[0].localservice='1'
 uci set dhcp.@dnsmasq[0].localuse='1'
-uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
-uci add_list dhcp.@dnsmasq[0].server='77.88.8.8'
 uci set dhcp.@dnsmasq[0].cachesize='1000'
 uci set dhcp.@dnsmasq[0].min_cache_ttl='300'
 uci set dhcp.@dnsmasq[0].max_cache_ttl='1800'
 uci set dhcp.@dnsmasq[0].local='/lan/'
 uci set dhcp.@dnsmasq[0].domain='lan'
-uci set dhcp.@dnsmasq[0].localservice='1'
+uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
+uci add_list dhcp.@dnsmasq[0].server='77.88.8.8'
 
 # Отключаем только odhcpd (не нужен)
 service odhcpd stop 2>/dev/null || true
