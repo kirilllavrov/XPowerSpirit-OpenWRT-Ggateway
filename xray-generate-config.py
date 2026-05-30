@@ -308,7 +308,7 @@ def base_config() -> dict:
         "inbounds": [
             {
                 "tag": "tproxy-in",
-                "listen": "127.0.0.1",
+                "listen": "0.0.0.0",
                 "port": 12345,
                 "protocol": "dokodemo-door",
                 "settings": {
