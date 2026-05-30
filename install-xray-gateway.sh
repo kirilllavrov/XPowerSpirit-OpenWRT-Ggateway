@@ -358,8 +358,7 @@ fi
 uci set network.lan.device="$LAN_IF"
 
 # DNS для шлюза — внешний, не зависит от Xray.
-# Клиентский DNS перехватывается nftables TProxy и идёт через Xray DoH.
-# Xray dns-in на 127.0.0.1:53 доступен для явных запросов.
+# dnsmasq служит DNS-фронтендом: клиенты → dnsmasq :53 → Xray :5353 → DoH
 uci set network.lan.dns='1.0.0.1'
 
 # Отключаем DHCP-сервер (Keenetic раздаёт адреса)
@@ -367,11 +366,23 @@ uci set dhcp.lan.ignore='1'
 uci set dhcp.lan.dhcpv6='disabled'
 uci set dhcp.lan.ra='disabled'
 
-# Отключаем dnsmasq и odhcpd — они не нужны (нет DHCP, DNS через TProxy + Xray dns-in)
+# dnsmasq: DNS-фронтенд (без DHCP)
+# Принимает запросы клиентов на :53, форвардит в Xray dns-in на :5353
+uci set dhcp.@dnsmasq[0].noresolv='1'
+uci set dhcp.@dnsmasq[0].strictorder='1'
+uci set dhcp.@dnsmasq[0].localuse='1'
+uci add_list dhcp.@dnsmasq[0].server='127.0.0.1#5353'
+uci add_list dhcp.@dnsmasq[0].server='77.88.8.8'
+uci set dhcp.@dnsmasq[0].cachesize='1000'
+uci set dhcp.@dnsmasq[0].min_cache_ttl='300'
+uci set dhcp.@dnsmasq[0].max_cache_ttl='1800'
+uci set dhcp.@dnsmasq[0].local='/lan/'
+uci set dhcp.@dnsmasq[0].domain='lan'
+uci set dhcp.@dnsmasq[0].localservice='1'
+
+# Отключаем только odhcpd (не нужен)
 service odhcpd stop 2>/dev/null || true
 service odhcpd disable 2>/dev/null || true
-service dnsmasq stop 2>/dev/null || true
-service dnsmasq disable 2>/dev/null || true
 
 # Сохраняем UCI, но НЕ применяем — сеть не трогаем до ребута.
 # Все настройки (IP, DNS, маршруты) подхватятся при загрузке.

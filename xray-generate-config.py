@@ -42,33 +42,6 @@ def _load_domain_whitelist() -> list:
 DOMAIN_WHITELIST = _load_domain_whitelist()
 
 
-def _get_gateway_ip() -> str:
-    """Возвращает IP шлюза из /etc/xray/gateway_ip или автоопределяет"""
-    try:
-        with open("/etc/xray/gateway_ip", "r") as f:
-            ip = f.read().strip()
-            if ip:
-                return ip
-    except FileNotFoundError:
-        pass
-    # Автоопределение: первый не-loopback IP
-    import subprocess
-    try:
-        out = subprocess.check_output(["ip", "-4", "addr", "show", "br-lan"], text=True)
-        for line in out.splitlines():
-            if "inet " in line:
-                return line.strip().split()[1].split("/")[0]
-    except Exception:
-        pass
-    return "127.0.0.1"
-
-GATEWAY_IP = _get_gateway_ip()
-
-
-# ============================================
-#   ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================
-
 def log_error(msg: str) -> None:
     """Выводит сообщение об ошибке в stderr"""
     print(msg, file=sys.stderr)
@@ -355,8 +328,8 @@ def base_config() -> dict:
             },
             {
                 "tag": "dns-in",
-                "listen": GATEWAY_IP,
-                "port": 53,
+                "listen": "127.0.0.1",
+                "port": 5353,
                 "protocol": "dokodemo-door",
                 "settings": {
                     "network": "udp"

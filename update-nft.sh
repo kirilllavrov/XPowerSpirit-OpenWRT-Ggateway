@@ -79,33 +79,27 @@ setup_network() {
     # 2. DHCP — не трогаем
     nft add rule inet fw4 xray_tproxy udp dport { 67, 68 } return
 
-    # 3. DNS (port 53) от клиентов — ВСЕГДА через Xray TProxy
-    #    Это должно быть ДО bypass приватных IP, чтобы DNS-запросы к Xray GW (192.168.1.2:53)
-    #    не обходили TProxy. Так клиентский DNS всегда идёт через Xray DoH — без утечек.
-    nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" udp dport 53 tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
-    nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" tcp dport 53 tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
-
-    # 4. Публичные DNS (не-DNS трафик к этим IP) — bypass
-    #    Клиентский DNS (порт 53) уже перехвачен правилом 3.
-    #    Собственный DNS шлюза идёт через OUTPUT (не попадает в PREROUTING).
+    # 3. Публичные DNS (не-DNS трафик к этим IP) — bypass
+    #    DNS (порт 53) обслуживается dnsmasq локально на интерфейсе шлюза.
+    #    Прямые DNS-запросы клиентов к внешним IP проваливаются до правила 7 (TPROXY → Xray).
     nft add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
 
-    # 5. Прокси-серверы (VPS) — bypass (чтобы Xray мог к ним подключиться без повторного проксирования)
+    # 4. Прокси-серверы (VPS) — bypass (чтобы Xray мог к ним подключиться без повторного проксирования)
     for ip in $(extract_server_ips); do
         if echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
             nft add rule inet fw4 xray_tproxy ip daddr $ip return
         fi
     done
 
-    # 6. Локальные/приватные/мультикаст адреса — не трогаем
-    #    DNS на этих адресах уже перехвачен правилом 3
+    # 5. Локальные/приватные/мультикаст адреса — не трогаем
+    #    DNS к IP шлюза (192.168.x.x) обслуживается dnsmasq локально
     nft add rule inet fw4 xray_tproxy ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4 } return
 
-    # 7. Блокировка QUIC (UDP/443) на входе — ДО TProxy
+    # 6. Блокировка QUIC (UDP/443) на входе — ДО TProxy
     #    QUIC не поддерживается VLESS+XTLS, поэтому блокируем чтобы браузеры использовали TCP/HTTPS
     nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" udp dport 443 drop
 
-    # 8. TProxy: весь остальной трафик с LAN → Xray (порт 12345)
+    # 7. TProxy: весь остальной трафик с LAN → Xray (порт 12345)
     #    mark=1 нужен для policy routing (таблица 100 → lo)
     nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" meta l4proto tcp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
     nft add rule inet fw4 xray_tproxy iifname "$LAN_IF" meta l4proto udp tproxy ip to 127.0.0.1:12345 meta mark set 0x1 accept
