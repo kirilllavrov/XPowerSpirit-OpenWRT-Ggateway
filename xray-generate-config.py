@@ -544,10 +544,7 @@ def build_balancer(proxy_outbounds: list) -> dict:
         "tag": "balancer",
         "selector": selector,
         "strategy": {
-            "type": "leastLoad",
-            "settings": {
-                "maxRTT": "800ms",
-            }
+            "type": "leastLoad"
         },
         "fallbackTag": "direct"
     }
