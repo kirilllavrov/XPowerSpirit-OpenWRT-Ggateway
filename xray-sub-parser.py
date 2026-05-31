@@ -324,6 +324,16 @@ def parse_json_subscription(raw_data: str, remarks_filter: str = '') -> dict:
             if protocol in ("freedom", "blackhole", "dns"):
                 continue
 
+            # Пропускаем серверы-заглушки (0.0.0.0, 127.0.0.1)
+            try:
+                addr = ob.get("settings", {}).get("vnext", [{}])[0].get("address", "")
+                if addr in ("0.0.0.0", "127.0.0.1"):
+                    tag = ob.get("tag", "?")
+                    print(f"  → Пропускаем заглушку: {tag} ({addr})", file=sys.stderr)
+                    continue
+            except Exception:
+                pass
+
             # Нормализуем тег (минимально)
             tag = ob.get("tag", "") or "proxy"
             tag = normalize_tag(tag)
@@ -402,6 +412,10 @@ def unified_main():
                         addr = ob.get("settings", {}).get("vnext", [{}])[0].get("address", "")
                         if addr == "hole":
                             hole = True
+                        # Пропускаем серверы-заглушки (0.0.0.0, 127.0.0.1)
+                        if addr in ("0.0.0.0", "127.0.0.1"):
+                            print(f"  → Пропускаем заглушку: {addr}", file=sys.stderr)
+                            continue
                     except Exception:
                         pass
                     outbounds.append(ob)

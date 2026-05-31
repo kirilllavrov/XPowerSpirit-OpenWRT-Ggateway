@@ -149,6 +149,16 @@ def extract_outbounds_from_subscription(sub_data: list, remarks_filter: str = ''
             if protocol in ["freedom", "blackhole", "dns"]:
                 continue
             
+            # Пропускаем серверы-заглушки (0.0.0.0, 127.0.0.1)
+            try:
+                addr = ob.get("settings", {}).get("vnext", [{}])[0].get("address", "")
+                if addr in ("0.0.0.0", "127.0.0.1"):
+                    tag = ob.get("tag", "?")
+                    print(f"  → Пропускаем заглушку: {tag} ({addr})", file=sys.stderr)
+                    continue
+            except Exception:
+                pass
+            
             # Нормализуем тег
             if "tag" not in ob or not ob["tag"]:
                 ob["tag"] = "proxy"
@@ -622,7 +632,18 @@ def main():
             return
         
         # Нормализуем все outbounds (sockopt, mux — зона ответственности генератора)
-        proxy_outbounds = [normalize_outbound(ob) for ob in raw_outbounds]
+        # Фильтруем серверы-заглушки (0.0.0.0, 127.0.0.1) — страховка
+        proxy_outbounds = []
+        for ob in raw_outbounds:
+            try:
+                addr = ob.get("settings", {}).get("vnext", [{}])[0].get("address", "")
+                if addr in ("0.0.0.0", "127.0.0.1"):
+                    tag = ob.get("tag", "?")
+                    print(f"  → Пропускаем заглушку: {tag} ({addr})", file=sys.stderr)
+                    continue
+            except Exception:
+                pass
+            proxy_outbounds.append(normalize_outbound(ob))
         
         cfg = base_config()
         
@@ -683,8 +704,12 @@ def main():
         proxy_outbounds = extract_outbounds_from_subscription(subscription, args.remarks)
         
         if not proxy_outbounds:
-            log_error("No valid outbounds found in JSON subscription")
-            sys.exit(1)
+            log_error("No valid outbounds found in JSON subscription — switching to DIRECT")
+            cfg = build_direct_config()
+            with open(args.output, "w") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+            print(f"  ✓ DIRECT-конфиг сохранён (нет серверов): {args.output}", file=sys.stderr)
+            return
         
         cfg = base_config()
         
