@@ -74,7 +74,7 @@ HWID_FILE="$CONFIG_DIR/hwid"
 TMP_DIR="/tmp/xray_install"
 GEO_DIR="/usr/share/xray"
 STATE_DIR="/etc/xray/state"
-SUB_USER_AGENT="OpenWrt-Xray/1.0"
+SUB_USER_AGENT="XPower/1.0"
 
 # Сетевые параметры
 LAN_IF=""

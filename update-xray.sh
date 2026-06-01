@@ -37,7 +37,7 @@ fetch_url() {
     esac
 
     while [ $retry -le $max_retries ]; do
-        curl -s -L --user-agent "OpenWrt-Xray/1.0" --max-time 15 \
+        curl -s -L --user-agent "XPower/1.0" --max-time 15 \
             -H "Cache-Control: no-cache, no-store" \
             -o "$dst" "$url"
         local rc=$?
@@ -129,7 +129,7 @@ SUB_URL="$(cat "$SUB_FILE" | tr -d '\n\r')"
 [ -z "$SUB_URL" ] && die "Пустой URL подписки"
 
 # Читаем User-Agent для подписки
-SUB_USER_AGENT="OpenWrt-Xray/1.0"
+SUB_USER_AGENT="XPower/1.0"
 if [ -f "$SUB_USER_AGENT_FILE" ]; then
     SUB_USER_AGENT="$(cat "$SUB_USER_AGENT_FILE" | tr -d '\n\r')"
 fi
@@ -156,7 +156,7 @@ for i in $(seq 1 5); do
     sleep 2
 done
 
-LATEST_VERSION=$(curl -s --user-agent "OpenWrt-Xray/1.0" --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
+LATEST_VERSION=$(curl -s --user-agent "XPower/1.0" --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest |
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
 
 if [ -z "$LATEST_VERSION" ]; then
