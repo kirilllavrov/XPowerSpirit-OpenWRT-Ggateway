@@ -60,11 +60,8 @@ fetch_url() {
 }
 
 CONFIG_DIR="/etc/xray"
-SUB_FILE="$CONFIG_DIR/subscription.url"
+SETTINGS_JSON="$CONFIG_DIR/settings.json"
 CONFIG_JSON="$CONFIG_DIR/config.json"
-HWID_FILE="$CONFIG_DIR/hwid"
-SUB_USER_AGENT_FILE="$CONFIG_DIR/sub_user_agent"
-SUB_REMARKS_FILE="$CONFIG_DIR/sub_remarks"
 
 STATE_DIR="/etc/xray/state"
 TMP_DIR="/tmp/xray_update"
@@ -117,30 +114,48 @@ if [ "$FREE_SPACE_ROOT" -lt 10240 ]; then
 fi
 
 # ============================
-#   HWID + подписка + настройки
+#   Хелпер для settings.json
 # ============================
 
-[ -f "$HWID_FILE" ] || die "Нет HWID (файл $HWID_FILE)"
-HWID="$(cat "$HWID_FILE" | tr -d '\n\r')"
-[ -z "$HWID" ] && die "HWID пуст"
+settings_get() {
+    local key="$1"
+    [ -f "$SETTINGS_JSON" ] || return 1
+    jq -r "
+        if $key | type == \"boolean\" then
+            if $key then \"1\" else \"0\" end
+        elif $key | type == \"array\" then
+            $key[]
+        else
+            $key // empty
+        end
+    " "$SETTINGS_JSON" 2>/dev/null
+}
 
-[ -f "$SUB_FILE" ] || die "Нет subscription.url (файл $SUB_FILE)"
-SUB_URL="$(cat "$SUB_FILE" | tr -d '\n\r')"
-[ -z "$SUB_URL" ] && die "Пустой URL подписки"
+# ============================
+#   HWID + подписка + настройки (из settings.json)
+# ============================
+
+[ -f "$SETTINGS_JSON" ] || die "Нет $SETTINGS_JSON"
+
+HWID="$(settings_get ".hwid")"
+[ -z "$HWID" ] && die "HWID пуст в settings.json"
+
+SUB_URL="$(settings_get ".subscription.url")"
+[ -z "$SUB_URL" ] && die "Пустой URL подписки в settings.json"
 
 # Читаем User-Agent для подписки
-SUB_USER_AGENT="XPower/1.0"
-if [ -f "$SUB_USER_AGENT_FILE" ]; then
-    SUB_USER_AGENT="$(cat "$SUB_USER_AGENT_FILE" | tr -d '\n\r')"
-fi
+SUB_USER_AGENT="$(settings_get ".subscription.user_agent")"
+[ -z "$SUB_USER_AGENT" ] && SUB_USER_AGENT="XPower/1.0"
 echo "→ User-Agent: $SUB_USER_AGENT" >>"$LOG"
 
 # Читаем фильтр remarks для JSON-формата
-REMARKS_FILTER=""
-if [ -f "$SUB_REMARKS_FILE" ]; then
-    REMARKS_FILTER="$(cat "$SUB_REMARKS_FILE" | tr -d '\n\r')"
-    echo "→ Фильтр remarks: $REMARKS_FILTER" >>"$LOG"
-fi
+REMARKS_FILTER="$(settings_get ".subscription.remarks_filter")"
+[ -n "$REMARKS_FILTER" ] && echo "→ Фильтр remarks: $REMARKS_FILTER" >>"$LOG"
+
+# Системные заголовки из settings.json
+_VER=$(settings_get ".ver_os" 2>/dev/null || echo "")
+_MODEL=$(settings_get ".device_model" 2>/dev/null || echo "")
+_OS=$(settings_get ".device_os" 2>/dev/null || echo "")
 
 # ============================
 #   Обновление Xray
@@ -282,7 +297,13 @@ echo "→ Скрипты обновлены" >>"$LOG"
 echo "→ Генерация config.json (User-Agent: $SUB_USER_AGENT)..." >>"$LOG"
 
 # Скачиваем подписку
-if curl -s -L -H "User-Agent: $SUB_USER_AGENT" -H "x-hwid: $HWID" "$SUB_URL" -o "$TMP_DIR/sub.txt"; then
+if curl -s -L \
+    -H "User-Agent: $SUB_USER_AGENT" \
+    -H "x-hwid: $HWID" \
+    ${_VER:+-H "X-Ver-Os: $_VER"} \
+    ${_MODEL:+-H "X-Device-Model: $_MODEL"} \
+    ${_OS:+-H "X-Device-Os: $_OS"} \
+    "$SUB_URL" -o "$TMP_DIR/sub.txt"; then
     
     # Проверяем, что скачалось не HTML
     if head -n 1 "$TMP_DIR/sub.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then

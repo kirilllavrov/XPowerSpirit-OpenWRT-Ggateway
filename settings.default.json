@@ -1,0 +1,16 @@
+{
+  "subscription": {
+    "url": "",
+    "user_agent": "XPower/1.0",
+    "remarks_filter": ""
+  },
+  "hwid": "",
+  "device_model": "",
+  "device_os": "",
+  "ver_os": "",
+  "domain_whitelist": [],
+  "geo": {
+    "geoip_url": "https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat",
+    "geosite_url": "https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
+  }
+}

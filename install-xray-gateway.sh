@@ -69,8 +69,7 @@ UPDATER="/usr/share/xray/update-xray.sh"
 NFT_UPDATER="/usr/share/xray/update-nft.sh"
 CONFIG_DIR="/etc/xray"
 CONFIG_JSON="$CONFIG_DIR/config.json"
-SUB_FILE="$CONFIG_DIR/subscription.url"
-HWID_FILE="$CONFIG_DIR/hwid"
+SETTINGS_JSON="$CONFIG_DIR/settings.json"
 TMP_DIR="/tmp/xray_install"
 GEO_DIR="/usr/share/xray"
 STATE_DIR="/etc/xray/state"
@@ -264,6 +263,8 @@ download_file() {
 			${1:+-H "$1"} \
 			${2:+-H "$2"} \
 			${3:+-H "$3"} \
+			${4:+-H "$4"} \
+			${5:+-H "$5"} \
 			-o "$dst" "$url"
 		local rc=$?
 
@@ -282,6 +283,40 @@ download_file() {
 	done
 
 	return 1
+}
+
+# ============================================
+#   ХЕЛПЕРЫ ДЛЯ settings.json
+# ============================================
+
+# Чтение значения из settings.json по jq-пути
+settings_get() {
+    local key="$1"
+    [ -f "$SETTINGS_JSON" ] || return 1
+    jq -r "
+        if $key | type == \"boolean\" then
+            if $key then \"1\" else \"0\" end
+        elif $key | type == \"array\" then
+            $key[]
+        else
+            $key // empty
+        end
+    " "$SETTINGS_JSON" 2>/dev/null
+}
+
+# Запись значения в settings.json по jq-пути
+settings_set() {
+    local key="$1"
+    local val="$2"
+    mkdir -p "$(dirname "$SETTINGS_JSON")"
+    [ -f "$SETTINGS_JSON" ] || echo '{}' > "$SETTINGS_JSON"
+    if echo "$val" | grep -qE '^[0-9]+$'; then
+        jq --argjson v "$val" "$key = \$v" "$SETTINGS_JSON" > "${SETTINGS_JSON}.tmp"
+    else
+        jq --arg v "$val" "$key = \$v" "$SETTINGS_JSON" > "${SETTINGS_JSON}.tmp"
+    fi
+    mv "${SETTINGS_JSON}.tmp" "$SETTINGS_JSON"
+    chmod 600 "$SETTINGS_JSON"
 }
 
 # ============================================
@@ -311,22 +346,25 @@ echo "    Подписка  : $SUB_URL"
 echo ""
 
 # ============================================
-#   2. Сохраняем подписку и User-Agent
+#   2. Инициализируем settings.json и сохраняем настройки
 # ============================================
-echo "=== Шаг 2: Сохранение подписки ==="
-echo "$SUB_URL" >"$SUB_FILE"
-chmod 600 "$SUB_FILE"
-echo "[+] Подписка сохранена"
+echo "=== Шаг 2: Инициализация settings.json ==="
 
-echo "$SUB_USER_AGENT" > "$CONFIG_DIR/sub_user_agent"
-echo "[+] User-Agent: $SUB_USER_AGENT"
-
-if [ -n "$REMARKS_FILTER" ]; then
-	echo "$REMARKS_FILTER" > "$CONFIG_DIR/sub_remarks"
-	echo "[+] Фильтр remarks: $REMARKS_FILTER"
-else
-	rm -f "$CONFIG_DIR/sub_remarks"
+# Скачиваем дефолтный settings.json из репозитория (если файла нет)
+if [ ! -f "$SETTINGS_JSON" ]; then
+    echo "  → Скачиваем settings.default.json из репозитория..."
+    download_file "$REPO/settings.default.json" "$SETTINGS_JSON" || {
+        echo "  [X] Не удалось скачать settings.default.json"
+        exit 1
+    }
+    echo "  ✓ settings.json инициализирован"
 fi
+
+# Сохраняем настройки подписки
+settings_set ".subscription.url" "$SUB_URL"
+settings_set ".subscription.user_agent" "$SUB_USER_AGENT"
+[ -n "$REMARKS_FILTER" ] && settings_set ".subscription.remarks_filter" "$REMARKS_FILTER"
+echo "[+] Подписка сохранена в settings.json"
 
 # ============================================
 #   3. Настройка IP (статический или DHCP)
@@ -519,15 +557,15 @@ download_script "$REPO/update-nft.sh" "$NFT_UPDATER"
 
 echo "[+] Все скрипты загружены"
 
-# Сохраняем IP шлюза — генератору нужен для dns-in inbound
+# Сохраняем IP шлюза (справочно, для диагностики)
 echo "$LAN_IP" > "$CONFIG_DIR/gateway_ip"
 
-# Сохраняем приоритетный домен в файл (генератор читает его при каждом запуске)
+# Сохраняем приоритетный домен в settings.json
 if [ -n "$DWL_DOMAIN" ]; then
-	echo "$DWL_DOMAIN" > "$CONFIG_DIR/dwl_domain"
+	jq --arg d "$DWL_DOMAIN" \
+		'if .domain_whitelist | index($d) then . else .domain_whitelist += [$d] end' \
+		"$SETTINGS_JSON" > "${SETTINGS_JSON}.tmp" && mv "${SETTINGS_JSON}.tmp" "$SETTINGS_JSON"
 	echo "  → Приоритетный домен сохранён: $DWL_DOMAIN"
-else
-	rm -f "$CONFIG_DIR/dwl_domain"
 fi
 
 # ============================================
@@ -584,14 +622,43 @@ update_geo \
 # HWID
 echo "  → Генерируем HWID..."
 HWID="$(cat /proc/sys/kernel/random/uuid | tr -d '-')"
-echo "$HWID" >"$HWID_FILE"
-chmod 600 "$HWID_FILE"
+settings_set ".hwid" "$HWID"
 echo "  ✓ HWID: $HWID"
+
+# Определяем модель устройства и версию ОС (системные заголовки для подписки)
+echo "  → Определяем модель устройства..."
+DEVICE_MODEL=$(dmesg | sed -n 's/.*Machine model: //p' | head -1)
+if [ -n "$DEVICE_MODEL" ]; then
+    settings_set ".device_model" "$DEVICE_MODEL"
+    echo "  ✓ Модель: $DEVICE_MODEL"
+else
+    echo "  [!] Не удалось определить модель устройства"
+fi
+
+echo "  → Определяем версию OpenWrt..."
+if [ -f /etc/openwrt_release ]; then
+    . /etc/openwrt_release
+    [ -n "$DISTRIB_ID" ] && settings_set ".device_os" "$DISTRIB_ID"
+    [ -n "$DISTRIB_RELEASE" ] && settings_set ".ver_os" "$DISTRIB_RELEASE"
+    echo "  ✓ ОС: $DISTRIB_ID $DISTRIB_RELEASE"
+else
+    echo "  [!] /etc/openwrt_release не найден"
+fi
 
 # Генерация config.json
 echo "  → Скачиваем подписку и генерируем config.json..."
 
-if download_file "$SUB_URL" "/tmp/sub_raw.txt" "User-Agent: $SUB_USER_AGENT" "x-hwid: $HWID"; then
+# Системные заголовки из settings.json
+_H_VER=$(settings_get ".ver_os" 2>/dev/null || echo "")
+_H_MODEL=$(settings_get ".device_model" 2>/dev/null || echo "")
+_H_OS=$(settings_get ".device_os" 2>/dev/null || echo "")
+
+if download_file "$SUB_URL" "/tmp/sub_raw.txt" \
+    "User-Agent: $SUB_USER_AGENT" \
+    "x-hwid: $HWID" \
+    ${_H_VER:+"X-Ver-Os: $_H_VER"} \
+    ${_H_MODEL:+"X-Device-Model: $_H_MODEL"} \
+    ${_H_OS:+"X-Device-Os: $_H_OS"}; then
 	
 	if head -n 1 "/tmp/sub_raw.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
 		echo "  [X] Подписка вернула HTML вместо данных"

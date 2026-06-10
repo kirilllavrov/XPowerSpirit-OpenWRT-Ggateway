@@ -4,7 +4,7 @@ Xray Config Generator for OpenWrt TProxy
 Поддерживает три входных формата:
   --format unified - унифицированный JSON из xray-sub-parser.py (рекомендуемый)
   --format vless   - старый режим: VLESS outbounds из xray-sub-parser.py
-  --format json    - старый режим: сырая JSON-подписка Happ/Sing-box
+  --format json    - старый режим: сырая JSON-подписка Happ/Sing-box/XPower
 
 Специальная обработка "hole":
   Если в подписке обнаружен outbound с address="hole", генерируется DIRECT-конфиг
@@ -12,34 +12,38 @@ Xray Config Generator for OpenWrt TProxy
 
 Балансировка:
   Используется стратегия leastLoad с burstObservatory для выбора наиболее стабильного прокси.
+
+Настройки:
+  Читает /etc/xray/settings.json — единый конфигурационный файл:
+    - domain_whitelist: список доменов для приоритетного выбора сервера
 """
 
 import json
 import sys
 import re
 import argparse
+import os
 
 # ============================================
 #   КОНФИГУРАЦИЯ
 # ============================================
 
-# Whitelist доменов для VLESS-подписок (из /etc/xray/dwl_domain)
-# Используется только в choose_best_server() для VLESS-формата.
-# В unified/json форматах не применяется — там балансировщик.
-def _load_domain_whitelist() -> list:
-    """Загружает whitelist из /etc/xray/dwl_domain (только для VLESS Base64 подписок)"""
-    whitelist = []
-    try:
-        with open("/etc/xray/dwl_domain", "r") as f:
-            for line in f:
-                domain = line.strip()
-                if domain and not domain.startswith("#"):
-                    whitelist.append(domain)
-    except FileNotFoundError:
-        pass
-    return whitelist
+SETTINGS_FILE = "/etc/xray/settings.json"
 
-DOMAIN_WHITELIST = _load_domain_whitelist()
+# Whitelist по умолчанию (переопределяется из settings.json)
+DOMAIN_WHITELIST = []
+
+
+def load_settings():
+    """Загружает настройки из /etc/xray/settings.json"""
+    global DOMAIN_WHITELIST
+    if os.path.isfile(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE) as f:
+                settings = json.load(f)
+            DOMAIN_WHITELIST = settings.get("domain_whitelist", [])
+        except Exception:
+            pass
 
 
 def log_error(msg: str) -> None:
@@ -597,6 +601,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    load_settings()  # Загружаем domain_whitelist из settings.json
     
     if args.format == 'unified':
         # ========================================
