@@ -2,12 +2,12 @@
 # OpenWrt 25.12.x — Xray Transparent Gateway (IPv4-only)
 #
 # Прозрачный шлюз: устройство НЕ основной роутер.
-# Основной роутер (Keenetic) раздаёт DHCP, NAT, интернет.
+# Основной роутер раздаёт DHCP, NAT, интернет.
 # Xray-шлюз получает статический IP, принимает трафик клиентов,
 # обрабатывает через Xray TProxy и отправляет через основной роутер в интернет.
 #
 # Топология:
-#   Internet → Keenetic (192.168.1.1) → Xray GW (192.168.1.2) → Клиенты
+#   Internet → Роутер (192.168.1.1) → Xray GW (192.168.1.2) → Клиенты
 #   Клиенты: gateway=192.168.1.2, dns=192.168.1.2
 #
 # Параметры (все опциональны, недостающие запрашиваются интерактивно):
@@ -428,8 +428,8 @@ settings_set ".subscription.url" "$SUB_URL"
 settings_set ".subscription.user_agent" "$SUB_USER_AGENT"
 [ -n "$REMARKS_FILTER" ] && settings_set ".subscription.remarks_filter" "$REMARKS_FILTER"
 
-# Сохраняем IP шлюза (справочно, для диагностики)
-echo "$LAN_IP" > "$CONFIG_DIR/gateway_ip"
+# Сохраняем IP шлюза
+settings_set ".gateway_ip" "$LAN_IP"
 
 # Сохраняем приоритетный домен
 if [ -n "$DWL_DOMAIN" ]; then
@@ -663,26 +663,6 @@ HWID="$(cat /proc/sys/kernel/random/uuid | tr -d '-')"
 settings_set ".hwid" "$HWID"
 echo "  ✓ HWID: $HWID"
 
-# Определяем модель устройства и версию ОС (системные заголовки для подписки)
-echo "  → Определяем модель устройства..."
-DEVICE_MODEL=$(dmesg | sed -n 's/.*Machine model: //p' | head -1)
-if [ -n "$DEVICE_MODEL" ]; then
-    settings_set ".device_model" "$DEVICE_MODEL"
-    echo "  ✓ Модель: $DEVICE_MODEL"
-else
-    echo "  [!] Не удалось определить модель устройства"
-fi
-
-echo "  → Определяем версию OpenWrt..."
-if [ -f /etc/openwrt_release ]; then
-    . /etc/openwrt_release
-    [ -n "$DISTRIB_ID" ] && settings_set ".device_os" "$DISTRIB_ID"
-    [ -n "$DISTRIB_RELEASE" ] && settings_set ".ver_os" "$DISTRIB_RELEASE"
-    echo "  ✓ ОС: $DISTRIB_ID $DISTRIB_RELEASE"
-else
-    echo "  [!] /etc/openwrt_release не найден"
-fi
-
 # Генерация config.json
 echo "  → Скачиваем подписку и генерируем config.json..."
 
@@ -758,8 +738,9 @@ start_service() {
         sleep 2
     done
 
-    # Сохраняем IP шлюза (нужен генератору для dns-in)
-    ip -4 addr show br-lan 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 > /etc/xray/gateway_ip 2>/dev/null || true
+    # Сохраняем IP шлюза в settings.json (справочно)
+    _GWIP=$(ip -4 addr show br-lan 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+    [ -n "$_GWIP" ] && jq --arg v "$_GWIP" '.gateway_ip = $v' /etc/xray/settings.json > /tmp/settings.tmp && mv /tmp/settings.tmp /etc/xray/settings.json 2>/dev/null || true
 
     # Синхронизация времени (важно для TLS/REALITY)
     ntpd -q -p ru.pool.ntp.org 2>/dev/null || \

@@ -79,10 +79,10 @@ setup_network() {
     # 2. DHCP — не трогаем
     nft add rule inet fw4 xray_tproxy udp dport { 67, 68 } return
 
-    # 3. Публичные DNS (не-DNS трафик к этим IP) — bypass
-    #    DNS (порт 53) обслуживается dnsmasq локально на интерфейсе шлюза.
-    #    Прямые DNS-запросы клиентов к внешним IP проваливаются до правила 7 (TPROXY → Xray).
-    nft add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 45.90.28.0, 45.90.30.0 } return
+    # 3. Публичные DNS-серверы — bypass (и DNS, и не-DNS трафик к этим IP)
+    #    Клиентский DNS обслуживается dnsmasq → Xray, прямой DNS — редкость.
+    #    При падении Xray это страховка: трафик к этим IP идёт напрямую.
+    nft add rule inet fw4 xray_tproxy ip daddr { 77.88.8.8, 77.88.8.1, 1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4, 45.90.28.0, 45.90.30.0 } return
 
     # 4. Прокси-серверы (VPS) — bypass (чтобы Xray мог к ним подключиться без повторного проксирования)
     for ip in $(extract_server_ips); do
