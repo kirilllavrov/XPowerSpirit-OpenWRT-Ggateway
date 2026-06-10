@@ -346,7 +346,7 @@ def base_config() -> dict:
                 "port": 5353,
                 "protocol": "dokodemo-door",
                 "settings": {
-                    "network": "udp"
+                    "network": "udp,tcp"
                 }
             }
         ]

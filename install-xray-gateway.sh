@@ -243,46 +243,70 @@ done
 # ============================================
 #   ЕДИНАЯ ФУНКЦИЯ ЗАГРУЗКИ
 # ============================================
+# Универсальная загрузка файла (с авто-заголовками из settings.json + до 3 кастомных)
+# Использование:
+#   download_file "URL" "DEST" ["HEADER1" "HEADER2" "HEADER3"]
 download_file() {
-	local url="$1"
-	local dst="$2"
-	shift 2
-	local max_retries=3
-	local retry=1
+    local url="$1"
+    local dst="$2"
+    shift 2
+    local max_retries=3
+    local retry=1
 
-	# Добавляем cache-buster к URL (GitHub CDN кеширует raw-файлы)
-	local cache_buster="_t=$(date +%s)_r=$RANDOM"
-	case "$url" in
-	*raw.githubusercontent.com*) url="${url}?${cache_buster}" ;;
-	esac
+    # Системные заголовки из settings.json (могут быть пустыми при первом запуске)
+    local _ua _ver _model _os
+    _ua=$(settings_get ".subscription.user_agent" 2>/dev/null || echo "XPower/1.0")
+    _ver=$(settings_get ".ver_os" 2>/dev/null || echo "")
+    _model=$(settings_get ".device_model" 2>/dev/null || echo "")
+    _os=$(settings_get ".device_os" 2>/dev/null || echo "")
 
-	while [ $retry -le $max_retries ]; do
-		curl -s -L --max-time 15 \
-			-H "Cache-Control: no-cache, no-store" \
-			-H "Pragma: no-cache" \
-			${1:+-H "$1"} \
-			${2:+-H "$2"} \
-			${3:+-H "$3"} \
-			${4:+-H "$4"} \
-			${5:+-H "$5"} \
-			-o "$dst" "$url"
-		local rc=$?
+    # Cache-buster для GitHub
+    local cache_buster="_t=$(date +%s)_r=$RANDOM"
+    case "$url" in
+    *raw.githubusercontent.com*) url="${url}?${cache_buster}" ;;
+    esac
 
-		if [ $rc -eq 0 ] && [ -s "$dst" ]; then
-			if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
-				rm -f "$dst"
-			else
-				return 0
-			fi
-		fi
+    while [ $retry -le $max_retries ]; do
+        curl -s -L --max-time 15 \
+            -H "User-Agent: $_ua" \
+            -H "Cache-Control: no-cache, no-store" \
+            -H "Pragma: no-cache" \
+            ${_ver:+-H "X-Ver-Os: $_ver"} \
+            ${_model:+-H "X-Device-Model: $_model"} \
+            ${_os:+-H "X-Device-Os: $_os"} \
+            ${1:+-H "$1"} \
+            ${2:+-H "$2"} \
+            ${3:+-H "$3"} \
+            -o "$dst" "$url"
+        local rc=$?
 
-		if [ $retry -lt $max_retries ]; then
-			sleep 2
-		fi
-		retry=$((retry + 1))
-	done
+        if [ $rc -eq 0 ] && [ -s "$dst" ]; then
+            if head -n 1 "$dst" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
+                rm -f "$dst"
+            else
+                return 0
+            fi
+        fi
 
-	return 1
+        if [ $retry -lt $max_retries ]; then
+            sleep 2
+        fi
+        retry=$((retry + 1))
+    done
+
+    return 1
+}
+
+download_script() {
+    local url="$1"
+    local dst="$2"
+    if download_file "$url" "$dst"; then
+        chmod +x "$dst"
+        echo "  → $dst"
+    else
+        echo "  [X] Ошибка: не удалось скачать $dst"
+        exit 1
+    fi
 }
 
 # ============================================
@@ -325,9 +349,37 @@ settings_set() {
 mkdir -p "$CONFIG_DIR" "$TMP_DIR" "$GEO_DIR" "$STATE_DIR"
 
 # ============================================
-#   1. Определение сети + выбор IP + подписка
+#   1. Инициализируем settings.json
 # ============================================
-echo "=== Шаг 1: Настройка сети и подписки ==="
+echo "=== Шаг 1: Инициализация settings.json ==="
+
+if [ ! -f "$SETTINGS_JSON" ]; then
+    echo "  → Скачиваем settings.default.json из репозитория..."
+    download_file "$REPO/settings.default.json" "$SETTINGS_JSON" || {
+        echo "  [X] Не удалось скачать settings.default.json"
+        exit 1
+    }
+    echo "  ✓ settings.json инициализирован"
+else
+    echo "  ✓ settings.json уже существует"
+fi
+
+# ============================================
+#   2. Загружаем скрипты из репозитория
+# ============================================
+echo "=== Шаг 2: Загрузка скриптов ==="
+
+download_script "$REPO/xray-generate-config.py" "$GENERATOR"
+download_script "$REPO/xray-sub-parser.py" "$PARSER"
+download_script "$REPO/update-xray.sh" "$UPDATER"
+download_script "$REPO/update-nft.sh" "$NFT_UPDATER"
+
+echo "[+] Все скрипты загружены"
+
+# ============================================
+#   3. Определение сети + выбор IP + подписка
+# ============================================
+echo "=== Шаг 3: Настройка сети и подписки ==="
 
 detect_network
 configure_network
@@ -346,30 +398,53 @@ echo "    Подписка  : $SUB_URL"
 echo ""
 
 # ============================================
-#   2. Инициализируем settings.json и сохраняем настройки
+#   4. Сохраняем настройки в settings.json
 # ============================================
-echo "=== Шаг 2: Инициализация settings.json ==="
+echo "=== Шаг 4: Сохранение настроек в settings.json ==="
 
-# Скачиваем дефолтный settings.json из репозитория (если файла нет)
-if [ ! -f "$SETTINGS_JSON" ]; then
-    echo "  → Скачиваем settings.default.json из репозитория..."
-    download_file "$REPO/settings.default.json" "$SETTINGS_JSON" || {
-        echo "  [X] Не удалось скачать settings.default.json"
-        exit 1
-    }
-    echo "  ✓ settings.json инициализирован"
+# Определяем модель устройства
+echo "  → Определяем модель устройства..."
+DEVICE_MODEL=$(dmesg | sed -n 's/.*Machine model: //p' | head -1)
+if [ -n "$DEVICE_MODEL" ]; then
+    settings_set ".device_model" "$DEVICE_MODEL"
+    echo "  ✓ Модель: $DEVICE_MODEL"
+else
+    echo "  [!] Не удалось определить модель устройства"
+fi
+
+# Определяем версию OpenWrt
+echo "  → Определяем версию OpenWrt..."
+if [ -f /etc/openwrt_release ]; then
+    . /etc/openwrt_release
+    [ -n "$DISTRIB_ID" ] && settings_set ".device_os" "$DISTRIB_ID"
+    [ -n "$DISTRIB_RELEASE" ] && settings_set ".ver_os" "$DISTRIB_RELEASE"
+    echo "  ✓ ОС: $DISTRIB_ID $DISTRIB_RELEASE"
+else
+    echo "  [!] /etc/openwrt_release не найден"
 fi
 
 # Сохраняем настройки подписки
 settings_set ".subscription.url" "$SUB_URL"
 settings_set ".subscription.user_agent" "$SUB_USER_AGENT"
 [ -n "$REMARKS_FILTER" ] && settings_set ".subscription.remarks_filter" "$REMARKS_FILTER"
-echo "[+] Подписка сохранена в settings.json"
+
+# Сохраняем IP шлюза (справочно, для диагностики)
+echo "$LAN_IP" > "$CONFIG_DIR/gateway_ip"
+
+# Сохраняем приоритетный домен
+if [ -n "$DWL_DOMAIN" ]; then
+	jq --arg d "$DWL_DOMAIN" \
+		'if .domain_whitelist | index($d) then . else .domain_whitelist += [$d] end' \
+		"$SETTINGS_JSON" > "${SETTINGS_JSON}.tmp" && mv "${SETTINGS_JSON}.tmp" "$SETTINGS_JSON"
+	echo "  → Приоритетный домен сохранён: $DWL_DOMAIN"
+fi
+
+echo "[+] settings.json сохранён"
 
 # ============================================
 #   3. Настройка IP (статический или DHCP)
 # ============================================
-echo "=== Шаг 3: Настройка IP-адреса ==="
+echo "=== Шаг 5: Настройка IP-адреса ==="
 
 # Запоминаем текущий IP до изменений
 OLD_IP="$LAN_IP"
@@ -443,7 +518,7 @@ echo "[+] UCI-конфигурация сети сохранена (примен
 # ============================================
 #   4. Установка Xray
 # ============================================
-echo "=== Шаг 4: Установка Xray ==="
+echo "=== Шаг 6: Установка Xray ==="
 
 # Ждём доступности GitHub API
 for i in $(seq 1 10); do
@@ -534,44 +609,9 @@ else
 fi
 
 # ============================================
-#   5. Загружаем скрипты из репозитория
+#   7. Геофайлы + HWID + config.json
 # ============================================
-echo "=== Шаг 5: Загрузка скриптов ==="
-
-download_script() {
-	local url="$1"
-	local dst="$2"
-	if download_file "$url" "$dst"; then
-		chmod +x "$dst"
-		echo "  → $dst"
-	else
-		echo "  [X] Ошибка: не удалось скачать $dst"
-		exit 1
-	fi
-}
-
-download_script "$REPO/xray-generate-config.py" "$GENERATOR"
-download_script "$REPO/xray-sub-parser.py" "$PARSER"
-download_script "$REPO/update-xray.sh" "$UPDATER"
-download_script "$REPO/update-nft.sh" "$NFT_UPDATER"
-
-echo "[+] Все скрипты загружены"
-
-# Сохраняем IP шлюза (справочно, для диагностики)
-echo "$LAN_IP" > "$CONFIG_DIR/gateway_ip"
-
-# Сохраняем приоритетный домен в settings.json
-if [ -n "$DWL_DOMAIN" ]; then
-	jq --arg d "$DWL_DOMAIN" \
-		'if .domain_whitelist | index($d) then . else .domain_whitelist += [$d] end' \
-		"$SETTINGS_JSON" > "${SETTINGS_JSON}.tmp" && mv "${SETTINGS_JSON}.tmp" "$SETTINGS_JSON"
-	echo "  → Приоритетный домен сохранён: $DWL_DOMAIN"
-fi
-
-# ============================================
-#   6. Геофайлы + HWID + config.json
-# ============================================
-echo "=== Шаг 6: Геофайлы, HWID, config.json ==="
+echo "=== Шаг 7: Геофайлы, HWID, config.json ==="
 
 update_geo() {
 	local URL="$1"
@@ -611,13 +651,11 @@ update_geo() {
 	echo "  ✓ $BASE готов"
 }
 
-update_geo \
-	"https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat" \
-	"$GEO_DIR/geoip.dat"
+GEOIP_URL="$(settings_get ".geo.geoip_url")"
+GEOSITE_URL="$(settings_get ".geo.geosite_url")"
 
-update_geo \
-	"https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat" \
-	"$GEO_DIR/geosite.dat"
+update_geo "$GEOIP_URL" "$GEO_DIR/geoip.dat"
+update_geo "$GEOSITE_URL" "$GEO_DIR/geosite.dat"
 
 # HWID
 echo "  → Генерируем HWID..."
@@ -648,17 +686,7 @@ fi
 # Генерация config.json
 echo "  → Скачиваем подписку и генерируем config.json..."
 
-# Системные заголовки из settings.json
-_H_VER=$(settings_get ".ver_os" 2>/dev/null || echo "")
-_H_MODEL=$(settings_get ".device_model" 2>/dev/null || echo "")
-_H_OS=$(settings_get ".device_os" 2>/dev/null || echo "")
-
-if download_file "$SUB_URL" "/tmp/sub_raw.txt" \
-    "User-Agent: $SUB_USER_AGENT" \
-    "x-hwid: $HWID" \
-    ${_H_VER:+"X-Ver-Os: $_H_VER"} \
-    ${_H_MODEL:+"X-Device-Model: $_H_MODEL"} \
-    ${_H_OS:+"X-Device-Os: $_H_OS"}; then
+if download_file "$SUB_URL" "/tmp/sub_raw.txt" "x-hwid: $HWID"; then
 	
 	if head -n 1 "/tmp/sub_raw.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
 		echo "  [X] Подписка вернула HTML вместо данных"
@@ -696,7 +724,7 @@ echo "[+] Геофайлы загружены, конфиг сгенериров
 # ============================================
 #   7. Проверяем config.json
 # ============================================
-echo "=== Шаг 7: Валидация config.json ==="
+echo "=== Шаг 8: Валидация config.json ==="
 if xray run -test -config "$CONFIG_JSON" >/dev/null 2>&1; then
 	echo "  ✓ config.json валиден"
 else
@@ -708,7 +736,7 @@ fi
 # ============================================
 #   8. Создаём init.d для Xray
 # ============================================
-echo "=== Шаг 8: Init.d для Xray ==="
+echo "=== Шаг 9: Init.d для Xray ==="
 
 cat >/etc/init.d/xray <<'XRAYEOF'
 #!/bin/sh /etc/rc.common
@@ -806,7 +834,7 @@ echo "[+] init.d для Xray создан и включён"
 # ============================================
 #   9. Policy routing для TProxy
 # ============================================
-echo "=== Шаг 9: Policy routing ==="
+echo "=== Шаг 10: Policy routing ==="
 
 if ! grep -q "^100[[:space:]]\+xray$" /etc/iproute2/rt_tables 2>/dev/null; then
 	echo "100 xray" >>/etc/iproute2/rt_tables
@@ -817,7 +845,7 @@ echo "[+] Routing table 100 (xray) добавлена"
 # ============================================
 #   10. Настройка sysctl
 # ============================================
-echo "=== Шаг 10: Sysctl ==="
+echo "=== Шаг 11: Sysctl ==="
 
 sysctl -w net.ipv4.conf.all.route_localnet=1
 sysctl -w net.ipv4.ip_forward=1
@@ -833,7 +861,7 @@ echo "[+] Sysctl настроен (ip_forward + route_localnet)"
 # ============================================
 #   11. Применяем nftables
 # ============================================
-echo "=== Шаг 11: nftables ==="
+echo "=== Шаг 12: nftables ==="
 "$NFT_UPDATER" || {
 	echo "  [X] Не удалось применить nftables"
 	# Не фатально — Xray применит при запуске
@@ -842,7 +870,7 @@ echo "=== Шаг 11: nftables ==="
 # ============================================
 #   12. Настройка cron
 # ============================================
-echo "=== Шаг 12: Cron ==="
+echo "=== Шаг 13: Cron ==="
 
 uci set system.@system[0].cronloglevel='9'
 uci commit system
@@ -858,7 +886,7 @@ fi
 # ============================================
 #   13. Настройка hotplug
 # ============================================
-echo "=== Шаг 13: Hotplug ==="
+echo "=== Шаг 14: Hotplug ==="
 
 cat >/etc/hotplug.d/iface/99-xray-autoupdate <<'EOF'
 #!/bin/sh
@@ -883,7 +911,7 @@ echo "[+] Hotplug: автообновление при поднятии LAN"
 # ============================================
 #   14. Запуск служб
 # ============================================
-echo "=== Шаг 14: Запуск служб ==="
+echo "=== Шаг 15: Запуск служб ==="
 
 service cron restart 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
 service firewall restart 2>/dev/null || /etc/init.d/firewall restart 2>/dev/null || true
@@ -893,7 +921,7 @@ echo "[+] Службы готовы. Xray запустится при загру
 # ============================================
 #   15. Финальная проверка
 # ============================================
-echo "=== Шаг 15: Финал ==="
+echo "=== Шаг 16: Финал ==="
 
 echo ""
 echo "============================================"

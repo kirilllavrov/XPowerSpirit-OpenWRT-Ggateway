@@ -24,21 +24,40 @@ die() {
     exit 1
 }
 
-# Единая функция загрузки (curl) — с обходом кеша GitHub
-fetch_url() {
+# Универсальная загрузка файла (с авто-заголовками из settings.json + до 3 кастомных)
+# Использование:
+#   download_file "URL" "DEST" ["HEADER1" "HEADER2" "HEADER3"]
+download_file() {
     local url="$1"
     local dst="$2"
-    local max_retries=2
+    shift 2
+    local max_retries=3
     local retry=1
 
-    # Cache-buster для raw.githubusercontent.com
+    # Системные заголовки из settings.json (могут быть пустыми при первом запуске)
+    local _ua _ver _model _os
+    _ua=$(settings_get ".subscription.user_agent" 2>/dev/null || echo "XPower/1.0")
+    _ver=$(settings_get ".ver_os" 2>/dev/null || echo "")
+    _model=$(settings_get ".device_model" 2>/dev/null || echo "")
+    _os=$(settings_get ".device_os" 2>/dev/null || echo "")
+
+    # Cache-buster для GitHub
+    local cache_buster="_t=$(date +%s)_r=$RANDOM"
     case "$url" in
-    *raw.githubusercontent.com*) url="${url}?_t=$(date +%s)" ;;
+    *raw.githubusercontent.com*) url="${url}?${cache_buster}" ;;
     esac
 
     while [ $retry -le $max_retries ]; do
-        curl -s -L --user-agent "XPower/1.0" --max-time 15 \
+        curl -s -L --max-time 15 \
+            -H "User-Agent: $_ua" \
             -H "Cache-Control: no-cache, no-store" \
+            -H "Pragma: no-cache" \
+            ${_ver:+-H "X-Ver-Os: $_ver"} \
+            ${_model:+-H "X-Device-Model: $_model"} \
+            ${_os:+-H "X-Device-Os: $_os"} \
+            ${1:+-H "$1"} \
+            ${2:+-H "$2"} \
+            ${3:+-H "$3"} \
             -o "$dst" "$url"
         local rc=$?
 
@@ -69,14 +88,13 @@ TMP_DIR="/tmp/xray_update"
 GENERATOR="/usr/share/xray/xray-generate-config.py"
 PARSER="/usr/share/xray/xray-sub-parser.py"
 NFT_UPDATER="/usr/share/xray/update-nft.sh"
-REPO="https://raw.githubusercontent.com/kirilllavrov/XPowerSpirit-OpenWRT-Ggateway/main"
 
 GEO_DIR="/usr/share/xray"
 GEOIP="$GEO_DIR/geoip.dat"
 GEOSITE="$GEO_DIR/geosite.dat"
 
-GEOIP_URL="https://raw.githubusercontent.com/kirilllavrov/geoip-builder/release/geoip.dat"
-GEOSITE_URL="https://raw.githubusercontent.com/kirilllavrov/geosite-builder/release/geosite.dat"
+GEOIP_URL="$(settings_get ".geo.geoip_url")"
+GEOSITE_URL="$(settings_get ".geo.geosite_url")"
 
 mkdir -p "$STATE_DIR" "$TMP_DIR"
 
@@ -152,11 +170,6 @@ echo "→ User-Agent: $SUB_USER_AGENT" >>"$LOG"
 REMARKS_FILTER="$(settings_get ".subscription.remarks_filter")"
 [ -n "$REMARKS_FILTER" ] && echo "→ Фильтр remarks: $REMARKS_FILTER" >>"$LOG"
 
-# Системные заголовки из settings.json
-_VER=$(settings_get ".ver_os" 2>/dev/null || echo "")
-_MODEL=$(settings_get ".device_model" 2>/dev/null || echo "")
-_OS=$(settings_get ".device_os" 2>/dev/null || echo "")
-
 # ============================
 #   Обновление Xray
 # ============================
@@ -189,7 +202,7 @@ else
     ZIP_DEST="$TMP_DIR/xray.zip"
     SHA_FILE="$STATE_DIR/xray.zip.sha256sum"
 
-    if fetch_url "${ZIP_URL}.dgst" "$STATE_DIR/xray.dgst"; then
+    if download_file "${ZIP_URL}.dgst" "$STATE_DIR/xray.dgst"; then
         REMOTE_SHA=$(extract_sha256 "$STATE_DIR/xray.dgst")
 
         if [ -n "$REMOTE_SHA" ]; then
@@ -200,7 +213,7 @@ else
                 echo "✓ Xray ZIP не изменился" >>"$LOG"
             else
                 echo "→ Скачиваем Xray ZIP..." >>"$LOG"
-                if fetch_url "$ZIP_URL" "$ZIP_DEST"; then
+                if download_file "$ZIP_URL" "$ZIP_DEST"; then
                     LOCAL_SHA=$(sha256sum "$ZIP_DEST" | awk '{print $1}')
                     if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
                         echo "$REMOTE_SHA" >"$SHA_FILE"
@@ -244,7 +257,7 @@ update_geo() {
     echo "→ Обновление $BASE..." >>"$LOG"
 
     # Скачиваем SHA256
-    if ! fetch_url "${URL}.sha256sum" "$TMP_SHA"; then
+    if ! download_file "${URL}.sha256sum" "$TMP_SHA"; then
         echo "[!] Не удалось скачать sha256sum для $BASE — пропускаем" >>"$LOG"
         return 1
     fi
@@ -262,7 +275,7 @@ update_geo() {
     fi
 
     # Скачиваем сам файл
-    if ! fetch_url "$URL" "$TMP_DEST"; then
+    if ! download_file "$URL" "$TMP_DEST"; then
         echo "[!] Не удалось скачать $BASE — пропускаем" >>"$LOG"
         return 1
     fi
@@ -288,22 +301,10 @@ update_geo "$GEOSITE_URL" "$GEOSITE"
 #   Генерация config.json (поддерживает оба формата)
 # ============================
 
-echo "→ Обновление скриптов..." >>"$LOG"
-for scr in xray-generate-config.py xray-sub-parser.py update-nft.sh; do
-    fetch_url "$REPO/$scr" "/tmp/${scr}" && mv "/tmp/${scr}" "/usr/share/xray/${scr}" && chmod +x "/usr/share/xray/${scr}" 2>/dev/null
-done
-echo "→ Скрипты обновлены" >>"$LOG"
-
 echo "→ Генерация config.json (User-Agent: $SUB_USER_AGENT)..." >>"$LOG"
 
 # Скачиваем подписку
-if curl -s -L \
-    -H "User-Agent: $SUB_USER_AGENT" \
-    -H "x-hwid: $HWID" \
-    ${_VER:+-H "X-Ver-Os: $_VER"} \
-    ${_MODEL:+-H "X-Device-Model: $_MODEL"} \
-    ${_OS:+-H "X-Device-Os: $_OS"} \
-    "$SUB_URL" -o "$TMP_DIR/sub.txt"; then
+if download_file "$SUB_URL" "$TMP_DIR/sub.txt" "x-hwid: $HWID"; then
     
     # Проверяем, что скачалось не HTML
     if head -n 1 "$TMP_DIR/sub.txt" 2>/dev/null | grep -qi "<html\|<!DOCTYPE"; then
