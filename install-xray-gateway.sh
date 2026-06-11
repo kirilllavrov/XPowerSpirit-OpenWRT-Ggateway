@@ -161,7 +161,7 @@ configure_network() {
 	echo "    [3] Оставить DHCP (не рекомендуется)"
 	echo ""
 	printf "  Ваш выбор [1]: "
-	read -r CHOICE
+	read -r CHOICE < /dev/tty
 	CHOICE="${CHOICE:-1}"
 
 	case "$CHOICE" in
@@ -171,15 +171,15 @@ configure_network() {
 	2)
 		echo ""
 		printf "    IP адрес шлюза [${LAN_IP}]: "
-		read -r NEW_IP
+		read -r NEW_IP < /dev/tty
 		[ -n "$NEW_IP" ] && LAN_IP="$NEW_IP"
 
 		printf "    Маска подсети [${LAN_MASK}]: "
-		read -r NEW_MASK
+		read -r NEW_MASK < /dev/tty
 		[ -n "$NEW_MASK" ] && LAN_MASK="$NEW_MASK"
 
 		printf "    IP основного роутера [${GATEWAY_IP}]: "
-		read -r NEW_GW
+		read -r NEW_GW < /dev/tty
 		[ -n "$NEW_GW" ] && GATEWAY_IP="$NEW_GW"
 
 		echo "    → Настройки: $LAN_IP / $LAN_MASK, роутер $GATEWAY_IP"
@@ -210,12 +210,12 @@ configure_subscription() {
 
 	echo "  Введите URL подписки (или укажите --sub=URL при запуске):"
 	printf "  > "
-	read -r SUB_URL
+	read -r SUB_URL < /dev/tty
 
 	while [ -z "$SUB_URL" ]; do
 		echo "  [!] URL обязателен. Введите URL подписки:"
 		printf "  > "
-		read -r SUB_URL
+		read -r SUB_URL < /dev/tty
 	done
 
 	echo "    URL: $SUB_URL"
