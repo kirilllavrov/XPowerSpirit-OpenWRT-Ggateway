@@ -186,7 +186,7 @@ configure_network() {
 		;;
 	3)
 		echo "    → Оставляю DHCP (IP может меняться)"
-		echo "    [!] ВНИМАНИЕ: Keenetic должен всегда выдавать один и тот же IP!"
+		echo "    [!] ВНИМАНИЕ: Роутер должен всегда выдавать один и тот же IP!"
 		USE_DHCP=1
 		;;
 	*)
@@ -474,7 +474,7 @@ uci set network.lan.device="$LAN_IF"
 # dnsmasq служит DNS-фронтендом: клиенты → dnsmasq :53 → Xray :5353 → DoH
 uci set network.lan.dns='1.0.0.1'
 
-# Отключаем DHCP-сервер (Keenetic раздаёт адреса)
+# Отключаем DHCP-сервер (Роутер раздаёт адреса)
 uci set dhcp.lan.ignore='1'
 uci set dhcp.lan.dhcpv6='disabled'
 uci set dhcp.lan.ra='disabled'
@@ -913,9 +913,9 @@ if [ "$USE_DHCP" != "1" ] && [ "$LAN_IP" != "$OLD_IP" ]; then
 	echo ""
 fi
 echo "  Xray-шлюз: $LAN_IP"
-echo "  Основной роутер (Keenetic): $GATEWAY_IP"
+echo "  Основной роутер (Роутер): $GATEWAY_IP"
 echo ""
-echo "  Настройте Keenetic DHCP:"
+echo "  Настройте Роутер DHCP:"
 echo "    Шлюз для клиентов: $LAN_IP"
 echo "    DNS для клиентов:  $LAN_IP"
 echo ""
